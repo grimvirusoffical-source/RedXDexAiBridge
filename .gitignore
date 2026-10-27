@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/redxdex-control
+*.enc
+.env*
+*.p8
+*.p12
+*.key
+.DS_Store
+smoke/
