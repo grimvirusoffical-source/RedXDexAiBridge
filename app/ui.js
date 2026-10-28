@@ -40,15 +40,3 @@ $('terminal-start').onclick=()=>attempt(async()=>{const args=JSON.parse($('termi
 api.on('approvals',renderApprovals);api.on('clients',items=>{if(state){state.clients=items;renderClients();}});api.on('settings',s=>{if(state){state.settings=s;renderSettings();}});api.on('remote',renderRemote);api.on('activity',renderActivity);api.on('updates:state',renderUpdates);
 attempt(async()=>{await refresh();await nativeStatus();});
 
-// Local embedded Vortex client. No raw HTML from the model is ever rendered.
-(()=>{
- const $=id=>document.getElementById(id), history=[];
- const status=s=>{$('vstatus').textContent=s;};
- async function test(){try{const r=await window.bridge.vortexStatus();if(!r.connected){status(r.error);return;}const select=$('vmodel');select.replaceChildren();for(const model of r.models){const o=document.createElement('option');o.value=model;o.textContent=model;select.append(o);}if(r.proAvailable)select.value='vortex-pro';status(r.proAvailable?'Connected · vortex-pro available':'Connected · vortex-pro is not authorized for this key; select an allowed model');}catch(e){status(e.message);}}
- $('vsave').onclick=async()=>{try{await window.bridge.vortexSave($('vkey').value);$('vkey').value='';await test();}catch(e){status(e.message);}};
- $('vtest').onclick=test;
- $('vdisconnect').onclick=async()=>{await window.bridge.vortexDisconnect();history.length=0;$('vchat').replaceChildren();status('Vortex key disconnected');};
- function append(role,text){const e=document.createElement('p'),b=document.createElement('strong');b.textContent=role+': ';e.append(b,document.createTextNode(text));$('vchat').append(e);$('vchat').scrollTop=$('vchat').scrollHeight;}
- $('vsend').onclick=async()=>{const input=$('vprompt'),prompt=input.value.trim();if(!prompt)return;const model=$('vmodel').value;if(!model){status('Test connection and select a model');return;}input.value='';history.push({role:'user',content:prompt});append('You',prompt);$('vsend').disabled=true;try{const answer=await window.bridge.vortexChat(history,model);history.push({role:'assistant',content:answer});append('Vortex',answer);status('Reply received');}catch(e){history.pop();status(e.message);}finally{$('vsend').disabled=false;}};
- $('vclear').onclick=()=>{history.length=0;$('vchat').replaceChildren();status('Chat cleared');};
-})();

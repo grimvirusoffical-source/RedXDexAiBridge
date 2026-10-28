@@ -1,0 +1,77 @@
+name: Bridge native platform builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/bridge-multiplatform-0.10.0
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Test and package ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb xdotool libgtk-3-0 libnss3 libxss1 libasound2 libgbm1 libfuse2
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Syntax and unit/security tests
+        run: npm run check
+      - name: Source GUI smoke on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:BRIDGE_SMOKE_OUTPUT = Join-Path $pwd 'reports/source-windows'
+          npm run test:gui
+      - name: Source GUI smoke on Linux
+        if: runner.os == 'Linux'
+        run: BRIDGE_SMOKE_OUTPUT="$PWD/reports/source-linux" xvfb-run -a npm run test:gui
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        run: npm run package:win
+      - name: Package Linux AppImage and deb
+        if: runner.os == 'Linux'
+        run: npm run package:linux
+      - name: Verify packaged Windows application launches
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:BRIDGE_BINARY = Join-Path $pwd 'dist/win-unpacked/RedXDexAiBridge.exe'
+          $env:BRIDGE_SMOKE_OUTPUT = Join-Path $pwd 'reports/packaged-windows'
+          npm run test:gui
+      - name: Verify packaged Linux application launches
+        if: runner.os == 'Linux'
+        run: BRIDGE_BINARY="$PWD/dist/linux-unpacked/redxdex-ai-bridge" BRIDGE_SMOKE_OUTPUT="$PWD/reports/packaged-linux" xvfb-run -a npm run test:gui
+      - name: Validate release artifacts and generate checksums
+        run: node scripts/check-artifacts.cjs
+      - name: Upload verified installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ runner.os }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.blockmap
+            dist/latest*.yml
+            dist/SHA256SUMS-*
+            reports/*/result.json
+            reports/*/process.log

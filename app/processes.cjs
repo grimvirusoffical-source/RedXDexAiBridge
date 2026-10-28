@@ -1,5 +1,6 @@
 'use strict';
 const cp=require('node:child_process'),crypto=require('node:crypto');
+const {childEnvironment}=require('./platform.cjs');
 class ProcessManager {
  constructor({limit=12,maxBytes=262144}={}) { this.limit=limit;this.maxBytes=maxBytes;this.sessions=new Map(); }
  start({command,args=[],cwd,clientId='local',timeoutMs=300000}) {
@@ -7,7 +8,7 @@ class ProcessManager {
   if(typeof command!=='string'||!command||command.length>4096||!Array.isArray(args)||args.length>128||!args.every(x=>typeof x==='string'&&x.length<16384))throw Error('Invalid command or arguments');
   if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>3600000)throw Error('Timeout must be 1 second to 1 hour');
   while(this.sessions.size>=100){const old=[...this.sessions.entries()].find(([,v])=>!v.running);if(!old)break;this.sessions.delete(old[0]);}
-  const child=cp.spawn(command,args,{cwd,shell:false,detached:process.platform!=='win32',env:{PATH:process.env.PATH,HOME:process.env.HOME,LANG:'en_US.UTF-8'},stdio:['pipe','pipe','pipe']});
+  const child=cp.spawn(command,args,{cwd,shell:false,detached:process.platform!=='win32',env:childEnvironment(),stdio:['pipe','pipe','pipe']});
   const id=crypto.randomUUID(),s={id,clientId,pid:child.pid,command,cwd,startedAt:Date.now(),running:true,output:'',offset:0,exitCode:null,child};
   this.sessions.set(id,s);
   const append=b=>{s.output+=b.toString();if(Buffer.byteLength(s.output)>this.maxBytes){const buf=Buffer.from(s.output);s.offset+=buf.length-this.maxBytes;s.output=buf.subarray(-this.maxBytes).toString();}};

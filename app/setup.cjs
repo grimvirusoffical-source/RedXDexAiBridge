@@ -7,7 +7,8 @@ const cp=require('node:child_process');
 function nodeCommand(){
   const fromPath=process.env.REDXDEX_NODE_PATH;
   if(fromPath&&path.isAbsolute(fromPath)&&fs.existsSync(fromPath))return fromPath;
-  if(!process.versions.electron&&process.execPath.endsWith('node'))return process.execPath;
+  if(!process.versions.electron&&/(?:^|[\\/])node(?:\.exe)?$/i.test(process.execPath))return process.execPath;
+  const executable=require('./platform.cjs').findExecutable('node');if(executable)return executable;
   for(const p of ['/opt/homebrew/bin/node','/usr/local/bin/node','/usr/bin/node'])if(fs.existsSync(p))return p;
   try{const found=cp.execFileSync('/usr/bin/which',['node'],{encoding:'utf8',timeout:2000}).trim();if(found&&path.isAbsolute(found))return found;}catch{}
   throw Error('Node.js not found. Install Node.js 22+ and restart the bridge.');

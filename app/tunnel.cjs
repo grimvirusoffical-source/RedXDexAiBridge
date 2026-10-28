@@ -83,10 +83,10 @@ class Tunnel {
     if (!this.desired || generation !== this.generation) return;
     let binary, args;
     if (this.configValue) {
-      binary = '/usr/bin/ssh'; args = sshArguments(this.configValue, this.localURL);
+      binary = require('./platform.cjs').findExecutable('ssh'); if(!binary)throw Error('OpenSSH is required for the configured relay'); args = sshArguments(this.configValue, this.localURL);
       this.set({phase: 'connecting', mode: 'vps', url: this.configValue.publicOrigin + '/mcp', message: 'Connecting to your VPS relay; verifying public OAuth endpoint…'});
     } else {
-      binary = ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'].find(p => fs.existsSync(p));
+      binary = require('./platform.cjs').findExecutable('cloudflared') || ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared'].find(p => fs.existsSync(p));
       if (!binary) { this.desired = false; this.set({phase: 'error', url: null, message: 'Configure a VPS relay or install the official cloudflared client.'}); return; }
       args = ['tunnel', '--url', new URL(this.localURL).origin, '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4'];
       this.set({phase: 'connecting', mode: 'temporary', url: null, message: 'Starting temporary HTTPS tunnel…'});

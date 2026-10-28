@@ -1,18 +1,19 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "private": true,
-  "description": "Cross-client MCP desktop bridge with local permissions UI",
+  "description": "Red-XAI Bridge: permission-controlled computer tools and Vortex chat",
   "main": "app/main.cjs",
   "scripts": {
     "start": "electron .",
     "mcp": "node app/mcp.cjs",
     "test": "node scripts/test.cjs",
-    "package:mac": "npm run prepare:native && electron-builder --mac dmg zip --arm64 --publish never",
-    "package:win": "electron-builder --win nsis",
-    "package:linux": "electron-builder --linux AppImage",
+    "package:mac": "npm run prepare:native && electron-builder --mac dmg zip --arm64 --config.forceCodeSigning=true --publish never",
+    "package:win": "electron-builder --win nsis --x64 --publish never",
+    "package:linux": "electron-builder --linux AppImage deb --x64 --publish never",
     "prepare:native": "node scripts/build-native.cjs",
-    "check": "node scripts/check.cjs && npm test"
+    "check": "node scripts/check.cjs && npm test",
+    "test:gui": "node scripts/gui-smoke.cjs"
   },
   "devDependencies": {
     "electron": "45.1.0",
@@ -43,7 +44,14 @@
         "NSCameraUsageDescription": "Camera access is not used by the bridge.",
         "NSMicrophoneUsageDescription": "Microphone access is not used by the bridge."
       },
-      "notarize": false
+      "notarize": false,
+      "extraResources": [
+        {
+          "from": "build/redxdex-control",
+          "to": "redxdex-control"
+        }
+      ],
+      "icon": "build/icons/icon.icns"
     },
     "publish": [
       {
@@ -56,15 +64,44 @@
     ],
     "extraResources": [
       {
-        "from": "build/redxdex-control",
-        "to": "redxdex-control"
-      },
-      {
         "from": "app/adapter.cjs",
         "to": "bridge-adapter.cjs"
       }
     ],
-    "forceCodeSigning": true
+    "forceCodeSigning": false,
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "win": {
+      "icon": "build/icons/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "icon": "build/icons",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "maintainer": "Red-XAI",
+      "executableName": "redxdex-ai-bridge"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libasound2",
+        "xdotool"
+      ]
+    }
   },
   "dependencies": {
     "electron-updater": "6.8.11"

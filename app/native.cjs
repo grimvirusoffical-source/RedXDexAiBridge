@@ -1,26 +1,58 @@
 'use strict';
-const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process'),crypto=require('node:crypto');
-const execFile=require('node:util').promisify(cp.execFile);
-async function helper(){
- const packaged=process.resourcesPath&&path.join(process.resourcesPath,'redxdex-control');if(packaged&&fs.existsSync(packaged))return packaged;
- const built=path.join(__dirname,'..','build','redxdex-control');if(fs.existsSync(built))return built;
- throw Error('Native helper is not built. Run npm run prepare:native, or use the signed application.');
+const fs = require('node:fs');
+const path = require('node:path');
+const {promisify} = require('node:util');
+const execFile = promisify(require('node:child_process').execFile);
+const linux = require('./linux-control.cjs');
+let capture = null;
+
+async function helper() {
+  const packaged = process.resourcesPath && path.join(process.resourcesPath, 'redxdex-control');
+  if (packaged && fs.existsSync(packaged)) return packaged;
+  const built = path.join(__dirname, '..', 'build', 'redxdex-control');
+  if (fs.existsSync(built)) return built;
+  throw Error('The macOS control helper is missing. Use the packaged Mac application or run npm run prepare:native.');
 }
-async function control(input){if(process.platform!=='darwin')throw Error('Desktop input currently requires macOS');const {stdout}=await execFile(await helper(),[JSON.stringify(input)],{timeout:15000,maxBuffer:100000});return JSON.parse(stdout);}
-function permissionStatus(helper, screenStatus) {
- return {...helper, helperScreenRecording:!!helper.screenRecording,
-  screenRecording:screenStatus==='granted', screenRecordingStatus:screenStatus,
-  screenRecordingMessage:screenStatus==='granted'
-   ? 'The signed app has Screen Recording permission. Use the screenshot test to verify capture.'
-   : 'Enable RedXDexAiBridge in macOS Screen & System Audio Recording, then quit and reopen the app. A helper permission does not authorize the app itself.'};
+
+async function control(input) {
+  if (process.platform === 'linux') return linux.control(input);
+  if (process.platform === 'win32') {
+    if (input.action === 'status') return {
+      accessibility:false, screenRecording:true, inputBackend:'Not included in this Windows preview',
+      message:'Windows files, managed terminals, application launching, Vortex chat and screen capture are supported. Native mouse and keyboard injection are not included in this preview.'
+    };
+    throw Error('Windows mouse and keyboard control is not included in this preview. Other bridge capabilities remain available.');
+  }
+  if (process.platform !== 'darwin') throw Error('Unsupported desktop platform.');
+  const {stdout} = await execFile(await helper(), [JSON.stringify(input)], {timeout:15000, maxBuffer:100000});
+  return JSON.parse(stdout);
 }
-async function screenshot(){
- if(process.platform!=='darwin')throw Error('Screenshot currently requires macOS');
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'redxdex-screen-'));fs.chmodSync(dir,0o700);const file=path.join(dir,'screen.png');
- try{await execFile('/usr/sbin/screencapture',['-x','-t','png',file],{timeout:15000});if(!fs.existsSync(file))throw Error('Screen capture failed. Grant Screen Recording permission in macOS Settings.');const bytes=fs.readFileSync(file);if(bytes.length>8*1024*1024)throw Error('Screenshot exceeds the 8 MB limit');return bytes.toString('base64');}catch(error){
- const reason=String(error.stderr||error.message||error);
- if(/could not create image|not authorized|permission|denied/i.test(reason))throw Error('Screen capture was blocked or unavailable. Enable RedXDexAiBridge in macOS Settings → Privacy & Security → Screen & System Audio Recording, then quit and reopen the app. Permission granted to another app or helper does not prove this app can capture the display.');
- throw error;
- }finally{fs.rmSync(dir,{recursive:true,force:true});}
+
+function permissionStatus(helperState, screenStatus, platform = process.platform) {
+  if (platform !== 'darwin') return {
+    ...helperState,
+    screenRecording:screenStatus === 'available',
+    screenRecordingStatus:screenStatus,
+    screenRecordingMessage:helperState.message || 'Screen access is managed by the operating system and may require a screen-sharing selection.'
+  };
+  return {
+    ...helperState,
+    helperScreenRecording:!!helperState.screenRecording,
+    screenRecording:screenStatus === 'granted',
+    screenRecordingStatus:screenStatus,
+    screenRecordingMessage:screenStatus === 'granted'
+      ? 'The signed app has Screen Recording permission. Use the screenshot test to verify capture.'
+      : 'Enable RedXDexAiBridge in macOS Screen & System Audio Recording, then quit and reopen the app. A helper permission does not authorize the app itself.'
+  };
 }
-module.exports={control,screenshot,helper,permissionStatus};
+
+function setCaptureAdapter(fn) {
+  if (typeof fn !== 'function') throw Error('Invalid screenshot adapter.');
+  capture = fn;
+}
+async function screenshot() {
+  if (!capture) throw Error('Capture must be requested through the running desktop app.');
+  return capture();
+}
+
+module.exports = {control, screenshot, helper, permissionStatus, setCaptureAdapter};
