@@ -1,6 +1,6 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "Cross-client MCP desktop bridge with local permissions UI",
   "main": "app/main.cjs",

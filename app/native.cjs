@@ -7,9 +7,20 @@ async function helper(){
  throw Error('Native helper is not built. Run npm run prepare:native, or use the signed application.');
 }
 async function control(input){if(process.platform!=='darwin')throw Error('Desktop input currently requires macOS');const {stdout}=await execFile(await helper(),[JSON.stringify(input)],{timeout:15000,maxBuffer:100000});return JSON.parse(stdout);}
+function permissionStatus(helper, screenStatus) {
+ return {...helper, helperScreenRecording:!!helper.screenRecording,
+  screenRecording:screenStatus==='granted', screenRecordingStatus:screenStatus,
+  screenRecordingMessage:screenStatus==='granted'
+   ? 'The signed app has Screen Recording permission. Use the screenshot test to verify capture.'
+   : 'Enable RedXDexAiBridge in macOS Screen & System Audio Recording, then quit and reopen the app. A helper permission does not authorize the app itself.'};
+}
 async function screenshot(){
  if(process.platform!=='darwin')throw Error('Screenshot currently requires macOS');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'redxdex-screen-'));fs.chmodSync(dir,0o700);const file=path.join(dir,'screen.png');
- try{await execFile('/usr/sbin/screencapture',['-x','-t','png',file],{timeout:15000});if(!fs.existsSync(file))throw Error('Screen capture failed. Grant Screen Recording permission in macOS Settings.');const bytes=fs.readFileSync(file);if(bytes.length>8*1024*1024)throw Error('Screenshot exceeds the 8 MB limit');return bytes.toString('base64');}finally{fs.rmSync(dir,{recursive:true,force:true});}
+ try{await execFile('/usr/sbin/screencapture',['-x','-t','png',file],{timeout:15000});if(!fs.existsSync(file))throw Error('Screen capture failed. Grant Screen Recording permission in macOS Settings.');const bytes=fs.readFileSync(file);if(bytes.length>8*1024*1024)throw Error('Screenshot exceeds the 8 MB limit');return bytes.toString('base64');}catch(error){
+ const reason=String(error.stderr||error.message||error);
+ if(/could not create image|not authorized|permission|denied/i.test(reason))throw Error('Screen capture was blocked or unavailable. Enable RedXDexAiBridge in macOS Settings → Privacy & Security → Screen & System Audio Recording, then quit and reopen the app. Permission granted to another app or helper does not prove this app can capture the display.');
+ throw error;
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 }
-module.exports={control,screenshot,helper};
+module.exports={control,screenshot,helper,permissionStatus};

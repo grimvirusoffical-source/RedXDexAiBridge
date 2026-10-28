@@ -77,7 +77,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
  ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
  ipc('remote:start',async()=>{await startGateway();return tunnel.start(gateway.url);});ipc('remote:stop',()=>tunnel.stop());
- ipc('native:status',()=>native.control({action:'status'}).catch(e=>({error:e.message})));
+ ipc('native:status',async()=>{const helper=await native.control({action:'status'}).catch(e=>({error:e.message}));const status=process.platform==='darwin'?require('electron').systemPreferences.getMediaAccessStatus('screen'):'unknown';return native.permissionStatus(helper,status);});
  ipc('native:settings',section=>{const map={accessibility:'Privacy_Accessibility',screen:'Privacy_ScreenCapture'};if(!map[section])throw Error('Unknown settings section');return shell.openExternal('x-apple.systempreferences:com.apple.preference.security?'+map[section]);});
  ipc('tool:interactive',(name,args)=>core.perform(name,args,{clientId:'desktop',interactive:true}));
  ipc('clipboard:write',text=>{if(typeof text!=='string'||text.length>65536)throw Error('Invalid clipboard text');clipboard.writeText(text);return true;});
