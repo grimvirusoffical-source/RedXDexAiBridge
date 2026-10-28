@@ -31,7 +31,11 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
    }
    const bearer=String(req.headers.authorization||'').startsWith('Bearer ')?String(req.headers.authorization).slice(7):'';
    const client=clients?.verify(bearer)||oauth?.verify(bearer)||(token&&isAuthorized(req.headers.authorization,token)?{id:'local',name:'Local client',kind:'local'}:null);
-   if(!client){res.setHeader('WWW-Authenticate',oauth?.origin?`Bearer resource_metadata="${oauth.origin}/.well-known/oauth-protected-resource/mcp"`:'Bearer');return json(401,{error:'Authentication required'});}
+   const challenge=oauth?.origin?`Bearer resource_metadata="${oauth.origin}/.well-known/oauth-protected-resource/mcp", scope="bridge:tools"`:'Bearer';
+   if(!client)res.setHeader('WWW-Authenticate',challenge);
+   // Schema-only discovery is public on the OAuth endpoint. No computer tool
+   // (including status or profile) ever executes without a verified credential.
+   if(!client&&!oauth?.origin)return json(401,{error:'Authentication required'});
    if(pathname!=='/mcp')return json(404,{error:'Not found'});
    if(req.method!=='POST'){res.setHeader('Allow','POST');return json(405,{error:'This server uses JSON responses; a standalone SSE stream is not provided'});}
    if(req.headers.origin)return json(403,{error:'Browser origins cannot invoke computer tools'});
@@ -39,6 +43,16 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
    if(active>=32)return json(429,{error:'Too many concurrent requests'});
    const raw=await body(req);let message;try{message=JSON.parse(raw);}catch{return json(400,{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}});}
    if(Array.isArray(message)||!message||typeof message!=='object')return json(400,{jsonrpc:'2.0',id:null,error:{code:-32600,message:'Invalid Request'}});
+   if(!client){
+    const discovery=['initialize','ping','tools/list','notifications/initialized'].includes(message.method);
+    if(!discovery||bearer){
+     const failure={error:'Authentication required',_meta:{'mcp/www_authenticate':[challenge]}};
+     if(message.id!==undefined&&message.method==='tools/call')Object.assign(failure,{jsonrpc:'2.0',id:message.id,result:{content:[{type:'text',text:'Connect RedXDexAiBridge and approve pairing on your Mac before using computer tools.'}],isError:true,_meta:{'mcp/www_authenticate':[challenge]}}});
+     return json(401,failure);
+    }
+    const result=await dispatch(message,{discoveryOnly:true});
+    if(!result){res.writeHead(202).end();return;}return json(200,result);
+   }
    active++;let response;const started=Date.now();
    try{response=await dispatch(message,{...contextFor(client),clientId:client.id,clientName:client.name});}
    finally{active--;onCall({at:Date.now(),clientId:client.id,clientName:client.name,tool:message.params?.name||message.method,durationMs:Date.now()-started,error:!!response?.result?.isError});}

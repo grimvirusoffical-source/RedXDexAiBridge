@@ -23,7 +23,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
  async function startGateway(){if(gateway)return {running:true,url:gateway.url};gateway=await startServer({clients,oauth,contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});return {running:true,url:gateway.url};}
  function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
- function clientSpec(client){const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
+ function clientSpec(client){if(client==='codex')client='chatgpt';const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
   if(!c){c=clients.create(client==='claude'?'Claude Desktop':client==='vscode'?'VS Code':client==='cursor'?'Cursor':client,'local');defaultClient(c.id);atomicJSON(credentialFile,{id:c.id,token:c.token});}
   return {command:app.isPackaged?process.execPath:setup.nodeCommand(),args:[app.isPackaged?path.join(process.resourcesPath,'bridge-adapter.cjs'):path.join(__dirname,'adapter.cjs')],env:{...(app.isPackaged?{ELECTRON_RUN_AS_NODE:'1'}:{}),REDXDEX_CLIENT_KEY_FILE:credentialFile,REDXDEX_MANAGED:'1'}};
  }
@@ -34,7 +34,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   clients=new ClientStore(path.join(core.root,'clients.json'));
   approvals=new ApprovalQueue({emit:items=>{emit('approvals',items);if(items.length){app.dock?.bounce('informational');}}});
   oauth=new OAuthService({file:path.join(core.root,'oauth.json'),clients,approvals,onClient:defaultClient});
-  tunnel=new Tunnel(s=>{if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;emit('remote',s);});
+  tunnel=new Tunnel(s=>{if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);},{root:core.root});
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
@@ -57,7 +57,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
    quitting=true;app.quit();return;
   }
   if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
-  if(process.argv.includes('--connect-remote'))tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'off',message:e.message}));
+  if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true)tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
   if(core.settings().launchAtLogin&&app.isPackaged)app.setLoginItemSettings({openAtLogin:true});
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();

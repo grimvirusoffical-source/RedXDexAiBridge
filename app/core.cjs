@@ -60,11 +60,20 @@ definitions.push(
  {name:'search_files',description:'Search names recursively in approved folders, optionally return largest files. Skips symlinks, .git and node_modules.',inputSchema:obj({path:string,query:string,sort:{type:'string',enum:['name','size']},limit:{type:'integer',minimum:1,maximum:500}},['path'])}
 );
 const mouse=definitions.find(x=>x.name==='desktop_mouse');mouse.inputSchema=obj({action:{type:'string',enum:['move','click','drag','scroll']},x:{type:'number'},y:{type:'number'},toX:{type:'number'},toY:{type:'number'},click:{type:'boolean'},button:{type:'string',enum:['left','right']},count:{type:'integer',enum:[1,2]},dx:{type:'integer'},dy:{type:'integer'}});
-for(const d of definitions){d.inputSchema.additionalProperties=false;d.annotations={readOnlyHint:['bridge_status','list_files','read_text_file','file_info','search_files','process_list','process_output','desktop_screenshot'].includes(d.name),destructiveHint:['write_text_file','run_command','process_start','process_input','process_stop','desktop_mouse','desktop_key','desktop_type','trash_file','move_file'].includes(d.name),openWorldHint:['run_command','process_start','open_application','desktop_mouse','desktop_type','desktop_key'].includes(d.name)};}
+definitions.push({name:'get_profile',description:'Return the authenticated computer connection profile, without credentials or file content',inputSchema:obj({}),outputSchema:{type:'object',properties:{id:{type:'string'},name:{type:'string'},nickname:{type:'string'}},required:['id'],additionalProperties:false},_meta:{'openai/profile':true}});
+for(const d of definitions){d.securitySchemes=[{type:'oauth2',scopes:['bridge:tools']}];d._meta={...d._meta,securitySchemes:d.securitySchemes};d.inputSchema.additionalProperties=false;d.annotations={readOnlyHint:['get_profile','bridge_status','list_files','read_text_file','file_info','search_files','process_list','process_output','desktop_screenshot'].includes(d.name),destructiveHint:['write_text_file','run_command','process_start','process_input','process_stop','desktop_mouse','desktop_key','desktop_type','trash_file','move_file'].includes(d.name),openWorldHint:['run_command','process_start','open_application','desktop_mouse','desktop_type','desktop_key'].includes(d.name)};}
 
 async function perform(name,args={},context={}){
 context={...context,summary:name,details:JSON.stringify(args,(key,value)=>['content','text','input'].includes(key)?'[content omitted]':value).slice(0,4096)};
 const clientId=context.clientId||process.env.REDXDEX_CLIENT_ID||'local';
+if(name==='get_profile'){
+ const file=path.join(root,'profile.json');let profile;
+ if(fs.existsSync(file))profile=JSON.parse(fs.readFileSync(file,'utf8'));
+ else {profile={id:require('node:crypto').randomUUID()};require('./clients.cjs').atomicJSON(file,profile);}
+ if(typeof profile.id!=='string'||!profile.id)throw Error('Connection profile is invalid');
+ const value={id:profile.id,name:'RedXDexAiBridge on '+os.hostname(),nickname:os.hostname()};
+ return {text:JSON.stringify(value),structuredContent:value};
+}
 if(name==='bridge_status'){const s=settings();return {text:JSON.stringify({app:'RedXDexAiBridge',version:require('../package.json').version,platform:process.platform,transport:context.transport||'stdio',clientId,emergencyStop:s.emergencyStop,permissions:s.permissions,approvedFolders:s.directories},null,2)};}
 if(name==='list_files'){await ensurePermission('list',context);const p=allowedPath(args.path);return{text:JSON.stringify(fs.readdirSync(p,{withFileTypes:true}).slice(0,500).map(e=>({name:e.name,type:e.isDirectory()?'directory':'file'})),null,2)};}
 if(name==='read_text_file'){await ensurePermission('read',context);const p=allowedPath(args.path);const fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));try{const stat=fs.fstatSync(fd);if(!stat.isFile())throw Error('Target must be a regular file');if(stat.size>settings().maxReadBytes)throw Error('File exceeds read size limit');const content=fs.readFileSync(fd,'utf8');if(Buffer.byteLength(content)>settings().maxReadBytes)throw Error('File exceeds read size limit');return{text:content};}finally{fs.closeSync(fd)}}
