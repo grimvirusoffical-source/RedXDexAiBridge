@@ -100,7 +100,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
-      "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}"
+      "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "linux": {
       "icon": "build/icons",
@@ -116,7 +118,9 @@
           "Name": "Red-XAI Bridge",
           "Comment": "Permission-controlled AI desktop bridge"
         }
-      }
+      },
+      "syncDesktopName": true,
+      "executableName": "redxdex-ai-bridge"
     },
     "deb": {
       "depends": [
@@ -135,5 +139,11 @@
   "license": "UNLICENSED",
   "allowScripts": {
     "electron@45.1.0": true
-  }
+  },
+  "homepage": "https://red-xai.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/grimvirusoffical-source/RedXDexAiBridge.git"
+  },
+  "desktopName": "redxdex-ai-bridge.desktop"
 }

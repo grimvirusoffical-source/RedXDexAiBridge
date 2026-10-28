@@ -39,6 +39,6 @@ async function main() {
   fs.chmodSync(target, 0o755);
   fs.copyFileSync(path.resolve(__dirname,'../app/assets/cloudflared-LICENSE.txt'),path.join(dir,'LICENSE'));
   fs.writeFileSync(path.join(dir, 'PROVENANCE.json'), JSON.stringify({version: VERSION, source: name, sha256}, null, 2));
-  console.log('Bundled checksum-verified Cloudflare tunnel ' + VERSION + ' for ' + process.platform + '-' + process.arch);
+  console.log('Bundled checksum-verified Cloudflare tunnel ' + VERSION + ' for ' + targetKey);
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

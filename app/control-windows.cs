@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
@@ -25,6 +26,7 @@ public static class BridgeInput {
     };
     public static int Main() {
       try {
+        Console.InputEncoding=new UTF8Encoding(false);Console.OutputEncoding=new UTF8Encoding(false);
         string raw=Console.In.ReadToEnd();if(raw.Length>65536)Fail("Input request too large");
         data=json.Deserialize<Dictionary<string,object>>(raw);if(data==null)Fail("Invalid request");
         string action=Str("action");
@@ -45,7 +47,7 @@ public static class BridgeInput {
           foreach(char c in text)foreach(uint flag in new uint[]{4,6})Send(new Input {type=1,value=new InputUnion {keyboard=new KeyboardInput {scan=c,flags=flag}}});
         } else if(action=="key") {
           string name=Str("key").ToLowerInvariant();ushort code;
-          if(name.Length==1&&name[0]>='a'&&name[0]<='z')code=(ushort)Char.ToUpperInvariant(name[0]);
+          if(name.Length==1&&((name[0]>='a'&&name[0]<='z')||(name[0]>='0'&&name[0]<='9')))code=(ushort)Char.ToUpperInvariant(name[0]);
           else if(!keys.TryGetValue(name,out code)) {Fail("Unsupported key");return 1;}
           List<ushort> mods=new List<ushort>();
           if(data.ContainsKey("modifiers"))foreach(object v in (System.Collections.IEnumerable)data["modifiers"]){string m=Convert.ToString(v);if(m=="command")mods.Add(0x5b);else if(m=="control")mods.Add(0x11);else if(m=="option")mods.Add(0x12);else if(m=="shift")mods.Add(0x10);else Fail("Unsupported modifier");}

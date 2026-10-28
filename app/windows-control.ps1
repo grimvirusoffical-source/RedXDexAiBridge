@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try {
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
     if (-not $request.action) { throw 'Missing native action' }
