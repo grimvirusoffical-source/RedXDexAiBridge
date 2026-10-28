@@ -1,16 +1,16 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "private": true,
-  "description": "Cross-client MCP desktop bridge with local permissions UI",
+  "description": "Red-XAI Bridge \u2014 permission-controlled MCP tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
   "scripts": {
     "start": "electron .",
     "mcp": "node app/mcp.cjs",
     "test": "node scripts/test.cjs",
     "package:mac": "npm run prepare:native && electron-builder --mac dmg zip --arm64 --publish never",
-    "package:win": "electron-builder --win nsis",
-    "package:linux": "electron-builder --linux AppImage",
+    "package:win": "npm run prepare:native && electron-builder --win nsis --x64 --publish never",
+    "package:linux": "npm run prepare:native && electron-builder --linux AppImage deb --x64 --publish never",
     "prepare:native": "node scripts/build-native.cjs",
     "check": "node scripts/check.cjs && npm test"
   },
@@ -43,7 +43,14 @@
         "NSCameraUsageDescription": "Camera access is not used by the bridge.",
         "NSMicrophoneUsageDescription": "Microphone access is not used by the bridge."
       },
-      "notarize": false
+      "notarize": false,
+      "forceCodeSigning": true,
+      "extraResources": [
+        {
+          "from": "build/redxdex-control",
+          "to": "redxdex-control"
+        }
+      ]
     },
     "publish": [
       {
@@ -56,15 +63,48 @@
     ],
     "extraResources": [
       {
-        "from": "build/redxdex-control",
-        "to": "redxdex-control"
-      },
-      {
         "from": "app/adapter.cjs",
         "to": "bridge-adapter.cjs"
       }
     ],
-    "forceCodeSigning": true
+    "forceCodeSigning": false,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "RedXDexAiBridge-${version}-windows-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "build/redxdex-control.exe",
+          "to": "redxdex-control.exe"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "artifactName": "RedXDexAiBridge-${version}-linux-${arch}.${ext}",
+      "maintainer": "Red-XAI <support@infected-nation.com>"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnss3",
+        "libxss1",
+        "libasound2",
+        "xdotool",
+        "libsecret-1-0"
+      ]
+    }
   },
   "dependencies": {
     "electron-updater": "6.8.11"
