@@ -2,13 +2,14 @@
 const path=require('node:path'),fs=require('node:fs'),os=require('node:os'),crypto=require('node:crypto'),cp=require('node:child_process');
 const {pathToFileURL}=require('node:url');
 const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImage,shell,clipboard}=require('electron');
+if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!process.env.REDXDEX_SMOKE_OUTPUT))throw Error('Self-test requires isolated data and output folders');
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
 let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,quitting=false;const activity=[];
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
 app.setName('RedXDexAiBridge');
-if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT)app.setPath('userData',path.join(process.env.REDXDEX_SMOKE_OUTPUT,'userData'));
+if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))app.setPath('userData',path.join(process.env.REDXDEX_SMOKE_OUTPUT,'userData'));
 if(process.argv.includes('--vortex-diagnostic')){
  app.whenReady().then(async()=>{
   const result=await require('./vortex-diagnostic.cjs').run({app,safeStorage,root:core.root,argv:process.argv});
@@ -60,11 +61,11 @@ if(process.argv.includes('--vortex-diagnostic')){
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
   tray=new Tray(icon);if(process.platform==='darwin')tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
   await startGateway();
-  if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
+  if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
   await win.loadFile(path.join(__dirname,'index.html'));
-  if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT)console.error('SMOKE UI loaded');
-  if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT){
+  if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))console.error('SMOKE UI loaded');
+  if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){
    await new Promise(r=>setTimeout(r,1200));
    const result=await win.webContents.executeJavaScript(`(async()=>{const s=await window.bridge.snapshot();return {title:document.title,version:s.version,tools:s.toolCount,gateway:s.gateway.running,pages:document.querySelectorAll('.page').length,visibleVersion:document.getElementById('app-version').textContent,preload:typeof window.bridge.answer==='function'};})()`);
    result.navigation=await win.webContents.executeJavaScript(`(()=>{const out=[];for(const b of document.querySelectorAll('[data-page]')){b.click();out.push({page:b.dataset.page,visible:!document.getElementById('page-'+b.dataset.page).hidden});}return out;})()`);
@@ -79,7 +80,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(core.settings().launchAtLogin&&app.isPackaged)app.setLoginItemSettings({openAtLogin:true});
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();
- }).catch(e=>{if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
+ }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged)app.setLoginItemSettings({openAtLogin:result.launchAtLogin});emit('settings',result);return result;});

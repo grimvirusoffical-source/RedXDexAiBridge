@@ -11,7 +11,10 @@ const ASSETS = {
   'linux-x64': ['cloudflared-linux-amd64', 'e1bc0cf084fd9e590554fe769a86b1db46701c3f847a43d902f7b974a4e16298']
 };
 async function main() {
-  const selected = ASSETS[process.platform + '-' + process.arch];
+  const requested=process.argv.find(x=>x.startsWith('--target='));
+  const targetKey=requested?requested.slice(9):process.platform+'-'+process.arch;
+  const platform=targetKey.split('-')[0];
+  const selected = ASSETS[targetKey];
   if (!selected) throw Error('No pinned tunnel binary for ' + process.platform + '-' + process.arch);
   const [name, sha256] = selected;
   const dir = path.resolve(__dirname, '../build/tunnel');
@@ -26,7 +29,7 @@ async function main() {
     if (crypto.createHash('sha256').update(bytes).digest('hex') !== sha256) throw Error('Tunnel SHA-256 mismatch; refusing to package it');
     fs.writeFileSync(archive, bytes);
   }
-  const target = path.join(dir, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  const target = path.join(dir, platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
   if (name.endsWith('.tgz')) {
     const entries = cp.execFileSync('/usr/bin/tar', ['-tzf', archive], {encoding: 'utf8'}).trim().split('\n');
     if (entries.some(p => p.startsWith('/') || p.split('/').includes('..'))) throw Error('Unsafe archive path');
@@ -34,6 +37,7 @@ async function main() {
     if (!fs.existsSync(target)) throw Error('Tunnel archive did not contain cloudflared');
   } else fs.copyFileSync(archive, target);
   fs.chmodSync(target, 0o755);
+  fs.copyFileSync(path.resolve(__dirname,'../app/assets/cloudflared-LICENSE.txt'),path.join(dir,'LICENSE'));
   fs.writeFileSync(path.join(dir, 'PROVENANCE.json'), JSON.stringify({version: VERSION, source: name, sha256}, null, 2));
   console.log('Bundled checksum-verified Cloudflare tunnel ' + VERSION + ' for ' + process.platform + '-' + process.arch);
 }

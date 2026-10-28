@@ -4,7 +4,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const pkg = require('../package.json');
 const dir = path.resolve(__dirname, '../dist');
-const suffixes = process.platform === 'win32' ? ['.exe'] : process.platform === 'linux' ? ['.AppImage', '.deb'] : ['.dmg', '.zip'];
+const platform=(process.argv.find(x=>x.startsWith('--platform='))||'').slice(11)||process.platform;
+const suffixes = platform === 'win32' ? ['.exe'] : platform === 'linux' ? ['.AppImage', '.deb'] : ['.dmg', '.zip'];
 const entries = fs.readdirSync(dir).filter(name => name.includes(pkg.version) && suffixes.some(ext => name.endsWith(ext)));
 for (const suffix of suffixes) if (!entries.some(name => name.endsWith(suffix))) throw Error('Missing release artifact: ' + suffix);
 const lines = entries.map(name => {
@@ -15,5 +16,5 @@ const lines = entries.map(name => {
   if (name.endsWith('.deb') && bytes.subarray(0, 8).toString() !== '!<arch>\n') throw Error('Invalid Debian archive');
   return crypto.createHash('sha256').update(bytes).digest('hex') + '  ' + name;
 });
-fs.writeFileSync(path.join(dir, 'SHA256SUMS-' + process.platform + '-' + process.arch), lines.join('\n') + '\n');
+fs.writeFileSync(path.join(dir, 'SHA256SUMS-' + platform + '-' + process.arch), lines.join('\n') + '\n');
 console.log('Validated and hashed ' + entries.join(', '));
