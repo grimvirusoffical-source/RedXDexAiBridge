@@ -77,13 +77,13 @@ if(process.argv.includes('--vortex-diagnostic')){
   }
   if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
   if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true)tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
-  if(core.settings().launchAtLogin&&app.isPackaged)app.setLoginItemSettings({openAtLogin:true});
+  if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true);}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();
  }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
- ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged)app.setLoginItemSettings({openAtLogin:result.launchAtLogin});emit('settings',result);return result;});
+ ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin);}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
  ipc('stop:all',()=>stopEverything());
  ipc('folder:pick',async()=>{const r=await dialog.showOpenDialog(win,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
  ipc('approval:answer',(id,choice)=>approvals.resolve(id,choice));

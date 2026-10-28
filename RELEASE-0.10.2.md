@@ -2,6 +2,7 @@
 
 ## Background and simultaneous AI connections
 
+- Native macOS/Windows login startup and managed Linux freedesktop autostart, without overwriting custom user entries. Failed startup registration does not make the app unlaunchable.
 - Optional quiet startup in the system tray/menu bar, alongside the existing keep-running-on-close setting.
 - Global or per-client background-only policy for direct tools. It blocks mouse, keyboard and app-launch/focus calls while leaving approved file, terminal and screen tools available.
 - This policy is not a filesystem or OS sandbox: a client with terminal permission can run programs that affect the desktop. Use a separate Cloud PC/virtual session for genuine independent graphical desktops.
@@ -18,7 +19,7 @@ The remote bridge continues to support authenticated Streamable HTTP/OAuth and e
 
 ## Verification completed in the repair checkout
 
-48 tests passed, including 20 concurrent isolated process sessions, configurable quotas, background-policy enforcement, desktop ownership and previous OAuth/filesystem/security tests. Source UI smoke test: version 0.10.2, nine navigable pages, 23 tools, authenticated local gateway and no renderer errors.
+51 tests passed, including 20 concurrent isolated process sessions, configurable quotas, background-policy enforcement, desktop ownership and previous OAuth/filesystem/security tests. Source UI smoke test: version 0.10.2, nine navigable pages, 23 tools, authenticated local gateway and no renderer errors.
 
 ## Release signing
 

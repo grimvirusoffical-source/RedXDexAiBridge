@@ -47,3 +47,5 @@ $('client-execution').onchange=e=>attempt(async()=>{if(!selectedClient)return;st
 $('save-limits').onclick=()=>attempt(async()=>{const next={...state.settings};for(const [id,key]of [['max-processes','maxProcesses'],['max-processes-client','maxProcessesPerClient'],['max-requests','maxConcurrentRequests'],['max-requests-client','maxRequestsPerClient']]){const value=Number($(id).value);if(!Number.isInteger(value)||value<0||value>4096)throw Error('Each limit must be an integer from 0 to 4096');next[key]=value;}state.settings=await api.save(next);renderSettings();toast('Concurrency limits saved. Existing tasks are not killed.');});
 
 $('vortex-bridge-export').onclick=()=>attempt(async()=>{const r=await api.exportVortexMCP();if(!r.cancelled){await refresh();toast(r.message);}});
+
+api.on('startup:warning',message=>toast(message,true));
