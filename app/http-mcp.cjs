@@ -6,7 +6,7 @@ async function body(req,limit=1048576){let size=0,chunks=[];for await(const c of
 function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',port=0,onCall=()=>{}}={}){
  if(!['127.0.0.1','::1'].includes(host))throw Error('Refusing to bind MCP to non-loopback address');
  if(!clients&&!token)token=crypto.randomBytes(32).toString('base64url');
- let active=0;
+ let active=0,discoveryActive=0;const activeClients=new Map();
  const server=http.createServer(async(req,res)=>{
   const json=(status,value)=>{if(!res.headersSent)res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
   res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
@@ -40,7 +40,12 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
    if(req.method!=='POST'){res.setHeader('Allow','POST');return json(405,{error:'This server uses JSON responses; a standalone SSE stream is not provided'});}
    if(req.headers.origin)return json(403,{error:'Browser origins cannot invoke computer tools'});
    if(!String(req.headers['content-type']||'').toLowerCase().startsWith('application/json'))return json(415,{error:'JSON required'});
-   if(active>=32)return json(429,{error:'Too many concurrent requests'});
+   const limits=require('./core.cjs').settings(),total=limits.maxConcurrentRequests??64,perClient=limits.maxRequestsPerClient??16;
+   if((total>0&&active>=total)||(client&&perClient>0&&(activeClients.get(client.id)||0)>=perClient)){res.setHeader('Retry-After','1');return json(429,{error:'Configured concurrency limit reached; retry later or adjust the app settings'});}
+   if(!client&&discoveryActive>=8){res.setHeader('Retry-After','1');return json(429,{error:'Discovery is busy; retry shortly'});}
+   if(client){active++;activeClients.set(client.id,(activeClients.get(client.id)||0)+1);}else discoveryActive++;
+   let released=false;const release=()=>{if(released)return;released=true;if(client){active--;const n=(activeClients.get(client.id)||1)-1;if(n)activeClients.set(client.id,n);else activeClients.delete(client.id);}else discoveryActive--;};
+   res.once('finish',release);res.once('close',release);
    const raw=await body(req);let message;try{message=JSON.parse(raw);}catch{return json(400,{jsonrpc:'2.0',id:null,error:{code:-32700,message:'Parse error'}});}
    if(Array.isArray(message)||!message||typeof message!=='object')return json(400,{jsonrpc:'2.0',id:null,error:{code:-32600,message:'Invalid Request'}});
    if(!client){
@@ -53,9 +58,9 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
     const result=await dispatch(message,{discoveryOnly:true});
     if(!result){res.writeHead(202).end();return;}return json(200,result);
    }
-   active++;let response;const started=Date.now();
+   let response;const started=Date.now();
    try{response=await dispatch(message,{...contextFor(client),clientId:client.id,clientName:client.name});}
-   finally{active--;onCall({at:Date.now(),clientId:client.id,clientName:client.name,tool:message.params?.name||message.method,durationMs:Date.now()-started,error:!!response?.result?.isError});}
+   finally{onCall({at:Date.now(),clientId:client.id,clientName:client.name,tool:message.params?.name||message.method,durationMs:Date.now()-started,error:!!response?.result?.isError});}
    if(!response){res.writeHead(202).end();return;}json(200,response);
   }catch(e){if(!res.headersSent)json(e.status||400,{error:e.message==='Unexpected end of JSON input'?'Invalid JSON':String(e.message).slice(0,200)});else res.end();}
  });

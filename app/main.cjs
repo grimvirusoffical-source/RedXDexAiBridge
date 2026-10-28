@@ -39,8 +39,8 @@ if(process.argv.includes('--vortex-diagnostic')){
  function defaultClient(id){const s=core.settings();s.clientPolicies[id]=Object.fromEntries(Object.keys(s.permissions).map(k=>[k,'ask']));core.saveSettings(s);emit('clients',clients.list());}
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
  async function startGateway(){if(gateway)return {running:true,url:gateway.url};gateway=await startServer({clients,oauth,contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});return {running:true,url:gateway.url};}
- function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
- function clientSpec(client){if(client==='codex')client='chatgpt';const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
+ function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.desktopLease.reset();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
+ function clientSpec(client){if(!['codex','chatgpt','claude','vscode','cursor','vortex','Diagnostics'].includes(client))throw Error('Unsupported local client');if(client==='codex')client='chatgpt';const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
   if(!c){c=clients.create(client==='claude'?'Claude Desktop':client==='vscode'?'VS Code':client==='cursor'?'Cursor':client,'local');defaultClient(c.id);atomicJSON(credentialFile,{id:c.id,token:c.token});}
   return {command:app.isPackaged?process.execPath:setup.nodeCommand(),args:[app.isPackaged?path.join(process.resourcesPath,'bridge-adapter.cjs'):path.join(__dirname,'adapter.cjs')],env:{...(app.isPackaged?{ELECTRON_RUN_AS_NODE:'1'}:{}),REDXDEX_CLIENT_KEY_FILE:credentialFile,REDXDEX_MANAGED:'1'}};
  }
@@ -55,7 +55,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
-  win=new BrowserWindow({width:1240,height:860,minWidth:920,minHeight:650,title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
+  win=new BrowserWindow({show:!core.settings().startHidden,width:1240,height:860,minWidth:920,minHeight:650,title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==UI)e.preventDefault();});win.setMenuBarVisibility(false);
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
@@ -87,11 +87,20 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('stop:all',()=>stopEverything());
  ipc('folder:pick',async()=>{const r=await dialog.showOpenDialog(win,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
  ipc('approval:answer',(id,choice)=>approvals.resolve(id,choice));
- ipc('clients:revoke',id=>{clients.revoke(id);core.processes.stopClient(id);for(const pending of approvals.list())if(pending.clientId===id)approvals.resolve(pending.id,'deny','Client revoked');emit('clients',clients.list());return clients.list();});
+ ipc('clients:revoke',id=>{clients.revoke(id);core.processes.stopClient(id);core.desktopLease.reset(id);for(const pending of approvals.list())if(pending.clientId===id)approvals.resolve(pending.id,'deny','Client revoked');emit('clients',clients.list());return clients.list();});
  ipc('clients:create',name=>{const c=clients.create(name,'manual');defaultClient(c.id);return c;});
  ipc('setup:localPlugin',()=>{clientSpec('chatgpt');return {message:'Local ChatGPT plugin paired. Enable the RedXDexAiBridge plugin in a client that can execute local MCP tools. Remote ChatGPT sessions still require the HTTPS/OAuth connection.'};});
  ipc('setup:connect',async client=>{await startGateway();const spec=clientSpec(client),r=setup.addClient(client,{spec});emit('clients',clients.list());return r;});
  ipc('setup:config',client=>setup.configFor(client,clientSpec(client)));
+ ipc('setup:exportVortex',async()=>{
+  const result=await dialog.showSaveDialog(win,{title:'Export Vortex MCP connection',defaultPath:path.join(app.getPath('downloads'),'Red-XAI-Bridge-MCP.json'),filters:[{name:'MCP JSON',extensions:['json']}]});
+  if(result.canceled||!result.filePath)return {cancelled:true};
+  const config=setup.configFor('vortex',clientSpec('vortex'));
+  fs.writeFileSync(result.filePath,JSON.stringify(config,null,2)+'\n',{mode:0o600});
+  emit('clients',clients.list());
+  return {message:'Exported a Vortex-only connection. In Vortex, sign into the intended account, then MCP Servers → Import JSON. Grant the Vortex client permissions in Bridge. No API secret was included in the export.'};
+ });
+
  ipc('setup:diagnostics',async()=>{await startGateway();const spec=clientSpec('Diagnostics');const proc=cp.spawn(spec.command,spec.args,{env:{...process.env,...spec.env},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{proc.kill();reject(Error('MCP diagnostic timed out'));},5000);proc.stdout.on('data',b=>stdout+=b);proc.stderr.on('data',b=>stderr+=b);proc.on('error',e=>{clearTimeout(timer);reject(e);});proc.on('close',()=>{clearTimeout(timer);try{const r=JSON.parse(stdout.trim().split('\n')[0]);if(!r.result?.serverInfo)throw Error(r.error?.message||stderr||'MCP handshake failed');resolve({ok:true,version:r.result.serverInfo.version});}catch(e){reject(e);}});proc.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Diagnostics',version:'1'}}})+'\n');});});
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
  ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});

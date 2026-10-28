@@ -1,9 +1,11 @@
 'use strict';
 const cp=require('node:child_process'),crypto=require('node:crypto');
 class ProcessManager {
- constructor({limit=12,maxBytes=262144}={}) { this.limit=limit;this.maxBytes=maxBytes;this.sessions=new Map(); }
+ constructor({limit=32,maxBytes=262144,policy=()=>({})}={}) { this.limit=limit;this.maxBytes=maxBytes;this.policy=policy;this.sessions=new Map(); }
  start({command,args=[],cwd,clientId='local',timeoutMs=300000}) {
-  if([...this.sessions.values()].filter(x=>x.running).length>=this.limit)throw Error('Concurrent process limit reached');
+  const limits=this.policy(),active=[...this.sessions.values()].filter(x=>x.running),total=limits.maxProcesses??this.limit,perClient=limits.maxProcessesPerClient??0;
+  if(total>0&&active.length>=total)throw Error('Total process concurrency limit reached. Adjust Settings or wait for a process to finish.');
+  if(perClient>0&&active.filter(x=>x.clientId===clientId).length>=perClient)throw Error('This AI reached its process concurrency limit. Other AIs retain their own slots.');
   if(typeof command!=='string'||!command||command.length>4096||!Array.isArray(args)||args.length>128||!args.every(x=>typeof x==='string'&&x.length<16384))throw Error('Invalid command or arguments');
   if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>3600000)throw Error('Timeout must be 1 second to 1 hour');
   while(this.sessions.size>=100){const old=[...this.sessions.entries()].find(([,v])=>!v.running);if(!old)break;this.sessions.delete(old[0]);}

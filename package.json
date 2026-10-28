@@ -1,6 +1,6 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "private": true,
   "description": "Red-XAI Bridge \u2014 permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
@@ -130,7 +130,8 @@
         "xdotool"
       ]
     },
-    "artifactName": "RedXDexAiBridge-${version}-${os}-${arch}.${ext}"
+    "artifactName": "RedXDexAiBridge-${version}-${os}-${arch}.${ext}",
+    "afterSign": "scripts/notarize-mac.cjs"
   },
   "dependencies": {
     "electron-updater": "6.8.11"
