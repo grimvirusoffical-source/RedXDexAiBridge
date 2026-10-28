@@ -1,0 +1,40 @@
+'use strict';
+// Runs inside Electron, on CI's disposable desktop. Never uses the user's windows.
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const assert = require('node:assert/strict');
+const {app, BrowserWindow} = require('electron');
+const native = require('../app/native.cjs');
+const output = process.env.REDXDEX_NATIVE_TEST_OUTPUT || path.resolve('verification/native.json');
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+let window;
+app.whenReady().then(async () => {
+  window = new BrowserWindow({width: 640, height: 440, x: 100, y: 100, show: true, webPreferences: {nodeIntegration: false, contextIsolation: true, sandbox: true}});
+  await window.loadURL('data:text/html,<html><body style="background:white"><h1>Bridge native test fixture</h1><textarea id="input" style="position:absolute;top:100px;left:40px;width:400px;height:180px"></textarea></body></html>');
+  window.show(); window.focus();
+  await pause(800);
+  const status = await native.control({action: 'status'});
+  assert.equal(status.inputSupported ?? status.accessibility, true, 'Native input must be available in the test desktop');
+  const bounds = window.getContentBounds();
+  await native.control({action: 'move', x: bounds.x + 100, y: bounds.y + 160});
+  await native.control({action: 'click', x: bounds.x + 100, y: bounds.y + 160});
+  await native.control({action: 'type', text: 'BRIDGE_NATIVE_TEST'});
+  await pause(400);
+  assert.equal(await window.webContents.executeJavaScript('document.getElementById("input").value'), 'BRIDGE_NATIVE_TEST');
+  await native.control({action: 'key', key: 'a', modifiers: [process.platform === 'darwin' ? 'command' : 'control']});
+  await native.control({action: 'type', text: 'REPLACED_OK'});
+  await pause(300);
+  assert.equal(await window.webContents.executeJavaScript('document.getElementById("input").value'), 'REPLACED_OK');
+  await native.control({action: 'scroll', dx: 0, dy: -120});
+  const png = Buffer.from(await native.screenshot(), 'base64');
+  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  fs.mkdirSync(path.dirname(output), {recursive: true});
+  fs.writeFileSync(output, JSON.stringify({platform: process.platform, passed: true, checks: ['native status', 'mouse move/click', 'keyboard text', 'keyboard shortcut', 'scroll', 'real desktop PNG'], captureBytes: png.length}, null, 2));
+  console.log(fs.readFileSync(output, 'utf8'));
+  app.quit();
+}).catch(error => {
+  fs.mkdirSync(path.dirname(output), {recursive: true});
+  fs.writeFileSync(output, JSON.stringify({platform: process.platform, passed: false, error: error.stack}, null, 2));
+  console.error(error.stack); app.exit(1);
+});

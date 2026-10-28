@@ -9,11 +9,27 @@ const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
 app.setName('RedXDexAiBridge');
 if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT)app.setPath('userData',path.join(process.env.REDXDEX_SMOKE_OUTPUT,'userData'));
-if(!app.requestSingleInstanceLock()){app.quit();}else{
+if(process.argv.includes('--vortex-diagnostic')){
+ app.whenReady().then(async()=>{
+  const result=await require('./vortex-diagnostic.cjs').run({app,safeStorage,root:core.root,argv:process.argv});
+  app.exit(result.connected?0:1);
+ }).catch(error=>{console.error(error.message);app.exit(1);});
+}else if(!app.requestSingleInstanceLock()){app.quit();}else{
  app.on('second-instance',()=>show());
  function emit(channel,value){if(win&&!win.isDestroyed())win.webContents.send(channel,value);}
  function show(){if(win&&!win.isDestroyed()){win.show();win.focus();}}
  function audit(record){activity.unshift(record);activity.length=Math.min(activity.length,300);emit('activity',activity.slice(0,100));}
+ function vortexConfig(){
+  const file=path.join(app.getPath('userData'),'vortex-connection.json');
+  let config={};if(fs.existsSync(file))config=JSON.parse(fs.readFileSync(file,'utf8'));
+  return {endpoint:vortex.normalizeEndpoint(config.endpoint||vortex.ENDPOINT)};
+ }
+ async function vortexStatus(){
+  const config=vortexConfig(),key=readSecret('vortex-key');
+  if(!key)return {connected:false,endpoint:config.endpoint,error:'Add a Vortex API key first'};
+  try{const models=await vortex.models(key,globalThis.fetch,config);return {connected:true,endpoint:config.endpoint,models,defaultModel:vortex.DEFAULT_MODEL,proAvailable:models.includes(vortex.DEFAULT_MODEL)};}
+  catch(error){return {connected:false,endpoint:config.endpoint,error:error.message};}
+ }
  function secretFile(name){return path.join(app.getPath('userData'),name+'.enc');}
  function secure(){if(!safeStorage.isEncryptionAvailable()||safeStorage.getSelectedStorageBackend?.()==='basic_text')throw Error('Secure OS credential storage is unavailable');}
  function readSecret(name){secure();const p=secretFile(name);return fs.existsSync(p)?safeStorage.decryptString(fs.readFileSync(p)):'';}
@@ -38,11 +54,11 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
-  win=new BrowserWindow({width:1240,height:860,minWidth:920,minHeight:650,title:'RedXDexAiBridge',backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
+  win=new BrowserWindow({width:1240,height:860,minWidth:920,minHeight:650,title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==UI)e.preventDefault();});win.setMenuBarVisibility(false);
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
-  const icon=nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAF0lEQVQ4T2NkoBAwUqifYdQABowGAwMDAADzJgERLb8pywAAAABJRU5ErkJggg==');
-  tray=new Tray(icon);tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
+  const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
+  tray=new Tray(icon);if(process.platform==='darwin')tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
   await startGateway();
   if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
@@ -51,6 +67,8 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
   if(!app.isPackaged&&process.env.REDXDEX_SMOKE_OUTPUT){
    await new Promise(r=>setTimeout(r,1200));
    const result=await win.webContents.executeJavaScript(`(async()=>{const s=await window.bridge.snapshot();return {title:document.title,version:s.version,tools:s.toolCount,gateway:s.gateway.running,pages:document.querySelectorAll('.page').length,visibleVersion:document.getElementById('app-version').textContent,preload:typeof window.bridge.answer==='function'};})()`);
+   result.navigation=await win.webContents.executeJavaScript(`(()=>{const out=[];for(const b of document.querySelectorAll('[data-page]')){b.click();out.push({page:b.dataset.page,visible:!document.getElementById('page-'+b.dataset.page).hidden});}return out;})()`);
+   if(result.navigation.some(x=>!x.visible))throw Error('A navigation page did not open');
    const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    fs.writeFileSync(path.join(out,'ui.png'),(await win.webContents.capturePage()).toPNG());
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
@@ -78,16 +96,31 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
  ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
  ipc('remote:start',async()=>{await startGateway();return tunnel.start(gateway.url);});ipc('remote:stop',()=>tunnel.stop());
  ipc('native:status',async()=>{const helper=await native.control({action:'status'}).catch(e=>({error:e.message}));const status=process.platform==='darwin'?require('electron').systemPreferences.getMediaAccessStatus('screen'):'unknown';return native.permissionStatus(helper,status);});
- ipc('native:settings',section=>{const map={accessibility:'Privacy_Accessibility',screen:'Privacy_ScreenCapture'};if(!map[section])throw Error('Unknown settings section');return shell.openExternal('x-apple.systempreferences:com.apple.preference.security?'+map[section]);});
+ ipc('native:settings',section=>{
+  if(!['accessibility','screen'].includes(section))throw Error('Unknown settings section');
+  if(process.platform==='darwin')return shell.openExternal('x-apple.systempreferences:com.apple.preference.security?'+(section==='screen'?'Privacy_ScreenCapture':'Privacy_Accessibility'));
+  if(process.platform==='win32')return shell.openExternal('ms-settings:privacy');
+  return dialog.showMessageBox(win,{type:'info',title:'Linux desktop permissions',message:'Screenshots use your graphical desktop/portal. For mouse and keyboard control, use an X11 session and install xdotool from your distribution package manager. Wayland global input is not implemented.'});
+ });
  ipc('tool:interactive',(name,args)=>core.perform(name,args,{clientId:'desktop',interactive:true}));
  ipc('clipboard:write',text=>{if(typeof text!=='string'||text.length>65536)throw Error('Invalid clipboard text');clipboard.writeText(text);return true;});
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));
- ipc('updates:github',async()=>{const bin=[path.join(os.homedir(),'.local/bin/gh'),'/opt/homebrew/bin/gh','/usr/local/bin/gh'].find(p=>fs.existsSync(p));if(!bin)throw Error('GitHub CLI not found. Sign in with gh auth login first.');const {stdout}=await require('node:util').promisify(cp.execFile)(bin,['auth','token','--hostname','github.com'],{timeout:10000,maxBuffer:16384});const value=stdout.trim();if(!value)throw Error('GitHub is not signed in');saveSecret('github-updates',value);return {ok:true,message:'GitHub access saved using OS-backed encryption; credentials are not included in the application.'};});
+ ipc('updates:github',async()=>{const bin=require('./platform.cjs').findExecutable('gh');if(!bin)throw Error('GitHub CLI not found. Sign in with gh auth login first.');const {stdout}=await require('node:util').promisify(cp.execFile)(bin,['auth','token','--hostname','github.com'],{timeout:10000,maxBuffer:16384});const value=stdout.trim();if(!value)throw Error('GitHub is not signed in');saveSecret('github-updates',value);return {ok:true,message:'GitHub access saved using OS-backed encryption; credentials are not included in the application.'};});
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
- ipc('vortex:status',async()=>{const key=readSecret('vortex-key');if(!key)return {connected:false,error:'Add a Vortex API key first'};try{const models=await vortex.models(key);return {connected:true,models,defaultModel:vortex.DEFAULT_MODEL,proAvailable:models.includes(vortex.DEFAULT_MODEL)};}catch(e){return {connected:false,error:e.message};}});
- ipc('vortex:chat',(messages,model)=>vortex.chat(readSecret('vortex-key'),messages,model||vortex.DEFAULT_MODEL));ipc('vortex:disconnect',()=>{try{fs.unlinkSync(secretFile('vortex-key'));}catch{}return true;});
+ ipc('vortex:status',()=>vortexStatus());
+ ipc('vortex:connection',()=>({...vortexConfig(),keySaved:fs.existsSync(secretFile('vortex-key'))}));
+ ipc('vortex:endpoint',async value=>{
+  const endpoint=vortex.normalizeEndpoint(value);
+  if(endpoint!==vortexConfig().endpoint){
+   const decision=await dialog.showMessageBox(win,{type:'question',buttons:['Cancel','Use this endpoint'],defaultId:0,cancelId:0,title:'Vortex API connection',message:'Send Vortex requests and your saved API key only to this endpoint?',detail:endpoint+'\nChoose an endpoint you own or trust. The bridge never follows redirects with your key.'});
+   if(decision.response!==1)return {cancelled:true};
+  }
+  atomicJSON(path.join(app.getPath('userData'),'vortex-connection.json'),{endpoint});
+  return {endpoint};
+ });
+ ipc('vortex:chat',(messages,model)=>vortex.chat(readSecret('vortex-key'),messages,model||vortex.DEFAULT_MODEL,globalThis.fetch,vortexConfig()));ipc('vortex:disconnect',()=>{try{fs.unlinkSync(secretFile('vortex-key'));}catch{}return true;});
  app.on('activate',show);app.on('window-all-closed',()=>{if(process.platform!=='darwin'||!core.settings().keepRunning){quitting=true;app.quit();}});
  app.on('before-quit',()=>{quitting=true;approvals?.cancelAll('Bridge is quitting');core.processes.stopAll();tunnel?.stop();gateway?.server.closeAllConnections?.();gateway?.server.close();try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}});
 }

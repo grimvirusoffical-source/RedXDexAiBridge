@@ -7,7 +7,8 @@ const cp=require('node:child_process');
 function nodeCommand(){
   const fromPath=process.env.REDXDEX_NODE_PATH;
   if(fromPath&&path.isAbsolute(fromPath)&&fs.existsSync(fromPath))return fromPath;
-  if(!process.versions.electron&&process.execPath.endsWith('node'))return process.execPath;
+  if(!process.versions.electron&&/node(?:\.exe)?$/i.test(process.execPath))return process.execPath;
+  const foundNode=require('./platform.cjs').findExecutable('node');if(foundNode)return foundNode;
   for(const p of ['/opt/homebrew/bin/node','/usr/local/bin/node','/usr/bin/node'])if(fs.existsSync(p))return p;
   try{const found=cp.execFileSync('/usr/bin/which',['node'],{encoding:'utf8',timeout:2000}).trim();if(found&&path.isAbsolute(found))return found;}catch{}
   throw Error('Node.js not found. Install Node.js 22+ and restart the bridge.');
@@ -24,7 +25,7 @@ function configPath(client){
 }
 function configureCodex(spec, destination) {
  if(destination!==configPath('codex'))throw Error('Only the default Codex configuration is supported');
- const bin=['/opt/homebrew/bin/codex','/usr/local/bin/codex',path.join(os.homedir(),'.local/bin/codex'),'/Applications/Codex.app/Contents/Resources/codex'].find(p=>fs.existsSync(p));
+ const bin=require('./platform.cjs').findExecutable('codex')||['/opt/homebrew/bin/codex','/usr/local/bin/codex',path.join(os.homedir(),'.local/bin/codex'),'/Applications/Codex.app/Contents/Resources/codex'].find(p=>fs.existsSync(p));
  if(!bin)throw Error('Codex CLI is not installed. Install the official Codex desktop/CLI first.');
  const previous=cp.spawnSync(bin,['mcp','get','RedXDexAiBridge','--json'],{encoding:'utf8',timeout:10000,maxBuffer:65536});
  if(previous.status===0){

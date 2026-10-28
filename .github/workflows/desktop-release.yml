@@ -1,0 +1,104 @@
+name: Cross-platform bridge release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag (leave blank to build only)
+        required: false
+        default: ''
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: ubuntu-24.04
+            target: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Linux desktop prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xdotool libgtk-3-0 libnss3 libasound2t64 libsecret-1-0 dbus-x11 libfuse2t64
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run prepare:native
+      - run: npm run prepare:tunnel
+      - name: Windows GUI and native tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:REDXDEX_DATA_DIR = Join-Path $env:RUNNER_TEMP 'bridge-gui-data'
+          $env:REDXDEX_SMOKE_OUTPUT = Join-Path $pwd 'verification/gui'
+          & .\node_modules\.bin\electron.cmd .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:REDXDEX_SMOKE_OUTPUT
+          & .\node_modules\.bin\electron.cmd scripts/desktop-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Linux GUI and native tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-gui-data"
+          export REDXDEX_SMOKE_OUTPUT="$PWD/verification/gui"
+          xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron . --no-sandbox
+          unset REDXDEX_SMOKE_OUTPUT
+          xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron scripts/desktop-smoke.cjs --no-sandbox
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: npm run package:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        run: npm run package:linux
+      - name: Hash release artifacts
+        run: node scripts/check-artifacts.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bridge-${{ matrix.target }}
+          path: |
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.yml
+            dist/*.blockmap
+            dist/SHA256SUMS-*
+            verification/
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Upload verified installers to the existing draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          find artifacts -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' -o -name '*.blockmap' -o -name 'SHA256SUMS-*' \) -print0 | while IFS= read -r -d '' file; do
+            gh release upload "$RELEASE_TAG" "$file"
+          done

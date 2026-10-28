@@ -7,7 +7,7 @@ const path = require('node:path');
 const {EventEmitter} = require('node:events');
 const {Tunnel, validateRelay, sshArguments, probeEndpoint} = require('../app/tunnel.cjs');
 const config = {mode:'ssh', host:'45.77.105.187', user:'redxdex-relay', remotePort:18765,
-  identityFile:'/tmp/relay-key', knownHostsFile:'/tmp/relay-known-hosts', publicOrigin:'https://bridge.example'};
+  identityFile:path.join(os.tmpdir(),'relay-key'), knownHostsFile:path.join(os.tmpdir(),'relay-known-hosts'), publicOrigin:'https://bridge.example'};
 
 test('relay validation rejects injection, insecure origins and invalid forwarding ports', () => {
   assert.equal(validateRelay(config).publicOrigin, 'https://bridge.example');

@@ -1,18 +1,19 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
-  "description": "Red-XAI Bridge \u2014 permission-controlled MCP tools for macOS, Windows and Linux",
+  "description": "Red-XAI Bridge \u2014 permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
   "scripts": {
     "start": "electron .",
     "mcp": "node app/mcp.cjs",
     "test": "node scripts/test.cjs",
-    "package:mac": "npm run prepare:native && electron-builder --mac dmg zip --arm64 --publish never",
+    "package:mac": "npm run prepare:native && npm run prepare:tunnel && electron-builder --mac dmg zip --arm64 --config.forceCodeSigning=true --publish never",
     "package:win": "npm run prepare:native && electron-builder --win nsis --x64 --publish never",
-    "package:linux": "npm run prepare:native && electron-builder --linux AppImage deb --x64 --publish never",
+    "package:linux": "electron-builder --linux AppImage deb --x64 --publish never",
     "prepare:native": "node scripts/build-native.cjs",
-    "check": "node scripts/check.cjs && npm test"
+    "check": "node scripts/check.cjs && npm test",
+    "prepare:tunnel": "node scripts/prepare-tunnel.cjs"
   },
   "devDependencies": {
     "electron": "45.1.0",
@@ -26,7 +27,8 @@
     },
     "files": [
       "app/**/*",
-      "package.json"
+      "package.json",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -44,13 +46,13 @@
         "NSMicrophoneUsageDescription": "Microphone access is not used by the bridge."
       },
       "notarize": false,
-      "forceCodeSigning": true,
       "extraResources": [
         {
           "from": "build/redxdex-control",
           "to": "redxdex-control"
         }
-      ]
+      ],
+      "icon": "build/icon.icns"
     },
     "publish": [
       {
@@ -65,14 +67,25 @@
       {
         "from": "app/adapter.cjs",
         "to": "bridge-adapter.cjs"
+      },
+      {
+        "from": "build/tunnel",
+        "to": "tunnel",
+        "filter": [
+          "cloudflared",
+          "cloudflared.exe",
+          "PROVENANCE.json",
+          "LICENSE"
+        ]
       }
     ],
     "forceCodeSigning": false,
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
-      "artifactName": "RedXDexAiBridge-${version}-windows-${arch}.${ext}",
+      "requestedExecutionLevel": "asInvoker",
       "extraResources": [
         {
           "from": "build/redxdex-control.exe",
@@ -84,27 +97,36 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}"
     },
     "linux": {
+      "icon": "build/icons",
       "target": [
         "AppImage",
         "deb"
       ],
       "category": "Development",
-      "artifactName": "RedXDexAiBridge-${version}-linux-${arch}.${ext}",
-      "maintainer": "Red-XAI <support@infected-nation.com>"
+      "synopsis": "Red-XAI Bridge for permission-controlled AI computer access",
+      "maintainer": "Red-XAI <support@infected-nation.com>",
+      "desktop": {
+        "entry": {
+          "Name": "Red-XAI Bridge",
+          "Comment": "Permission-controlled AI desktop bridge"
+        }
+      }
     },
     "deb": {
       "depends": [
         "libgtk-3-0",
         "libnss3",
-        "libxss1",
-        "libasound2",
-        "xdotool",
-        "libsecret-1-0"
+        "libsecret-1-0",
+        "xdotool"
       ]
-    }
+    },
+    "artifactName": "RedXDexAiBridge-${version}-${os}-${arch}.${ext}"
   },
   "dependencies": {
     "electron-updater": "6.8.11"

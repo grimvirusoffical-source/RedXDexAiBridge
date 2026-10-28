@@ -8,3 +8,7 @@ build/redxdex-control
 *.key
 .DS_Store
 smoke/
+
+build/tunnel/
+verification/
+node_modules

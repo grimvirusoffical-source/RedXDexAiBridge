@@ -19,7 +19,7 @@ test('file tools, permissions, path escape and limits under repeated operations'
    assert.equal((await perform('read_text_file',{path:file})).text,`data-${i}`);
   }
   assert.equal(JSON.parse((await perform('list_files',{path:base})).text).length,150);
-  const link=path.join(base,'escape');fs.symlinkSync(outside,link);
+  const link=path.join(base,'escape');fs.symlinkSync(outside,link,process.platform==='win32'?'junction':'dir');
   await assert.rejects(perform('write_text_file',{path:path.join(link,'evil.txt'),content:'no'}),/outside approved/);
   await assert.rejects(perform('read_text_file',{path:path.join(outside,'unknown')}));
   assert.equal(fs.existsSync(path.join(outside,'evil.txt')),false);
