@@ -33,7 +33,7 @@ function permissionStatus(native, screenStatus, platform = process.platform) {
       : 'Enable RedXDexAiBridge in macOS Screen & System Audio Recording, then quit and reopen the app.'};
 }
 
-async function screenshot() {
+async function screenshotCapture() {
   try {
     if (process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== '1') {
       const {desktopCapturer, systemPreferences} = require('electron');
@@ -41,11 +41,20 @@ async function screenshot() {
         throw Error('Enable RedXDexAiBridge in macOS Settings → Privacy & Security → Screen & System Audio Recording, then quit and reopen it.');
       }
       const sources = await desktopCapturer.getSources({types: ['screen'], thumbnailSize: {width: 1920, height: 1080}});
-      const source = sources.find(item => item.thumbnail && !item.thumbnail.isEmpty());
+      const usable=sources.filter(item=>item.thumbnail&&!item.thumbnail.isEmpty());
+      const screen=require('electron').screen,primary=screen.getPrimaryDisplay();
+      const source=usable.find(item=>String(item.display_id)===String(primary.id))||usable[0];
       if (!source) throw Error('No screen capture was granted or no interactive display is available');
       const bytes = source.thumbnail.toPNG();
       if (bytes.length > 8 * 1024 * 1024) throw Error('Screenshot exceeds the 8 MB limit');
-      return bytes.toString('base64');
+      let text;
+      if(process.platform==='win32'){
+        const display=screen.getAllDisplays().find(d=>String(d.id)===String(source.display_id));
+        if(!display)throw Error('Cannot establish screenshot-to-pointer coordinates for this display');
+        const origin=screen.dipToScreenPoint({x:display.bounds.x,y:display.bounds.y});
+        text=JSON.stringify(require('./capture-geometry.cjs').captureGeometry(display,origin,{width:bytes.readUInt32BE(16),height:bytes.readUInt32BE(20)}));
+      }
+      return {data:bytes.toString('base64'),text};
     }
     if (process.platform !== 'darwin') throw Error('Start the desktop app to capture the screen on Windows or Linux');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'redxdex-screen-'));
@@ -55,7 +64,7 @@ async function screenshot() {
       await execFile('/usr/sbin/screencapture', ['-x', '-t', 'png', file], {timeout: 15000});
       const bytes = fs.readFileSync(file);
       if (bytes.length > 8 * 1024 * 1024) throw Error('Screenshot exceeds the 8 MB limit');
-      return bytes.toString('base64');
+      return {data:bytes.toString('base64')};
     } finally { fs.rmSync(dir, {recursive: true, force: true}); }
   } catch (error) {
     if (/could not create image|not authorized|permission|denied/i.test(String(error.stderr || error.message))) {
@@ -67,6 +76,8 @@ async function screenshot() {
   }
 }
 
+async function screenshot(){return (await screenshotCapture()).data;}
+
 async function openApplication(name) {
   validateInput({action: 'launch', name});
   if (process.platform === 'darwin') await execFile('/usr/bin/open', ['-a', name], {timeout: 15000});
@@ -74,4 +85,4 @@ async function openApplication(name) {
   return {text: 'Application launch requested'};
 }
 
-module.exports = {control, screenshot, helper, permissionStatus, openApplication};
+module.exports = {control, screenshot, screenshotCapture, helper, permissionStatus, openApplication};

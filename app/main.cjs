@@ -44,7 +44,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(!c){c=clients.create(client==='claude'?'Claude Desktop':client==='vscode'?'VS Code':client==='cursor'?'Cursor':client,'local');defaultClient(c.id);atomicJSON(credentialFile,{id:c.id,token:c.token});}
   return {command:app.isPackaged?process.execPath:setup.nodeCommand(),args:[app.isPackaged?path.join(process.resourcesPath,'bridge-adapter.cjs'):path.join(__dirname,'adapter.cjs')],env:{...(app.isPackaged?{ELECTRON_RUN_AS_NODE:'1'}:{}),REDXDEX_CLIENT_KEY_FILE:credentialFile,REDXDEX_MANAGED:'1'}};
  }
- async function configureUpdateFeed(){const key=readSecret('github-updates');if(!key)throw Error('Private updates need GitHub access. Click “Use this Mac’s GitHub login” in Settings. No token is bundled with the app.');require('electron-updater').autoUpdater.setFeedURL({provider:'github',owner:'grimvirusoffical-source',repo:'RedXDexAiBridge',private:true,token:key});}
+ async function configureUpdateFeed(){const key=readSecret('github-updates');if(!key)throw Error('Private updates need GitHub access. Click “Use this computer’s GitHub login” in Settings. No token is bundled with the app.');require('electron-updater').autoUpdater.setFeedURL({provider:'github',owner:'grimvirusoffical-source',repo:'RedXDexAiBridge',private:true,token:key});}
  async function checkUpdates(){await configureUpdateFeed();await updateController.check();return updateController.status();}
  app.whenReady().then(async()=>{
   fs.mkdirSync(core.root,{recursive:true,mode:0o700});fs.chmodSync(core.root,0o700);
@@ -55,7 +55,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
-  win=new BrowserWindow({show:!core.settings().startHidden,width:1240,height:860,minWidth:920,minHeight:650,title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
+  win=new BrowserWindow({show:!core.settings().startHidden,...require('./window-layout.cjs').windowLayout(require('electron').screen.getPrimaryDisplay().workArea),title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
   win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==UI)e.preventDefault();});win.setMenuBarVisibility(false);
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
@@ -66,12 +66,14 @@ if(process.argv.includes('--vortex-diagnostic')){
   await win.loadFile(path.join(__dirname,'index.html'));
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))console.error('SMOKE UI loaded');
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){
-   await new Promise(r=>setTimeout(r,1200));
+   await new Promise(r=>setTimeout(r,1200));console.error('SMOKE snapshot requested');
    const result=await win.webContents.executeJavaScript(`(async()=>{const s=await window.bridge.snapshot();return {title:document.title,version:s.version,tools:s.toolCount,gateway:s.gateway.running,pages:document.querySelectorAll('.page').length,visibleVersion:document.getElementById('app-version').textContent,preload:typeof window.bridge.answer==='function'};})()`);
-   result.navigation=await win.webContents.executeJavaScript(`(()=>{const out=[];for(const b of document.querySelectorAll('[data-page]')){b.click();out.push({page:b.dataset.page,visible:!document.getElementById('page-'+b.dataset.page).hidden});}return out;})()`);
+   console.error('SMOKE snapshot returned');result.navigation=await win.webContents.executeJavaScript(`(()=>{const out=[];for(const b of document.querySelectorAll('[data-page]')){b.click();out.push({page:b.dataset.page,visible:!document.getElementById('page-'+b.dataset.page).hidden});}return out;})()`);
    if(result.navigation.some(x=>!x.visible))throw Error('A navigation page did not open');
-   const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
-   fs.writeFileSync(path.join(out,'ui.png'),(await win.webContents.capturePage()).toPNG());
+   console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
+   result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
+   let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
+   if(captureError){result.uiCapture=false;result.uiCaptureError=captureError.message;const image=Buffer.from(await native.screenshot(),'base64');fs.writeFileSync(path.join(out,'desktop.png'),image);result.desktopCaptureFallback=true;}
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
    quitting=true;app.quit();return;
   }
@@ -80,7 +82,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true);}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();
- }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
+ }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);quitting=true;app.exit(1);return;}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin);}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});

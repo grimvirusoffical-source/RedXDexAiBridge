@@ -20,13 +20,17 @@ test('Linux startup quotes its executable and removes only its managed entry',()
   configureStartup({},false,options);assert.equal(fs.existsSync(file),false);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
-test('Linux refuses to replace custom or symlinked autostart configuration',()=>{
+test('Linux refuses to replace custom autostart configuration',()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-startup-'));
  try{
   const dir=path.join(root,'autostart');fs.mkdirSync(dir);const file=path.join(dir,'redxdex-ai-bridge.desktop');
   fs.writeFileSync(file,'custom entry');const options={platform:'linux',configDirectory:root,env:{}};
   assert.throws(()=>configureStartup({},false,options),/unmanaged/);assert.equal(fs.readFileSync(file,'utf8'),'custom entry');
-  fs.unlinkSync(file);fs.symlinkSync(path.join(root,'absent'),file);
-  assert.throws(()=>configureStartup({},false,options),/unmanaged/);
+
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('Linux refuses symlinked startup entries',{skip:process.platform==='win32'?'Windows symlink creation needs additional OS privileges; this Linux-only case runs on Linux CI':false},()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-startup-link-'));
+ try{const dir=path.join(root,'autostart');fs.mkdirSync(dir);const file=path.join(dir,'redxdex-ai-bridge.desktop');fs.symlinkSync(path.join(root,'absent'),file);assert.throws(()=>configureStartup({},false,{platform:'linux',configDirectory:root,env:{}}),/unmanaged/);}finally{fs.rmSync(root,{recursive:true,force:true});}
 });

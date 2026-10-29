@@ -1,15 +1,15 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "private": true,
-  "description": "Red-XAI Bridge \u2014 permission-controlled MCP desktop tools for macOS, Windows and Linux",
+  "description": "Red-XAI Bridge — permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
   "scripts": {
     "start": "electron .",
     "mcp": "node app/mcp.cjs",
     "test": "node scripts/test.cjs",
     "package:mac": "npm run prepare:native && npm run prepare:tunnel && electron-builder --mac dmg zip --arm64 --config.forceCodeSigning=true --publish never",
-    "package:win": "npm run prepare:native && electron-builder --win nsis --x64 --publish never",
+    "package:win": "npm run prepare:native && npm run prepare:tunnel && electron-builder --win nsis --x64 --publish never",
     "package:linux": "electron-builder --linux AppImage deb --x64 --publish never",
     "prepare:native": "node scripts/build-native.cjs",
     "check": "node scripts/check.cjs && npm test",

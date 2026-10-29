@@ -22,9 +22,9 @@ public static class RedXNative {
     }
     [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public UNION U; }
     [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
-    [DllImport("user32.dll", SetLastError=true)] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool SetPhysicalCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     public static void Mouse(uint flags, int data) {
         INPUT i = new INPUT(); i.type = 0; i.U.mi.dwFlags = flags; i.U.mi.mouseData = unchecked((uint)data);
         if (SendInput(1, new INPUT[] { i }, Marshal.SizeOf(typeof(INPUT))) != 1)
@@ -37,7 +37,7 @@ public static class RedXNative {
     }
 }
 '@
-    try { [void][RedXNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch {}
+    try { [void][RedXNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
     if ($request.action -eq 'status') {
         @{ platform='win32'; accessibility=[Environment]::UserInteractive; inputSupported=[Environment]::UserInteractive; screenCount=[RedXNative]::GetSystemMetrics(80); message='Input operates on the current interactive desktop. UAC, lock screens and higher-integrity windows are not bypassed.' } | ConvertTo-Json -Compress
         exit 0
@@ -45,7 +45,7 @@ public static class RedXNative {
     if (-not [Environment]::UserInteractive) { throw 'An interactive Windows desktop session is required' }
     function Move-To([double]$x, [double]$y) {
         if ([double]::IsNaN($x) -or [double]::IsInfinity($x) -or [math]::Abs($x) -gt 50000 -or [double]::IsNaN($y) -or [double]::IsInfinity($y) -or [math]::Abs($y) -gt 50000) { throw 'Invalid desktop coordinates' }
-        if (-not [RedXNative]::SetCursorPos([int]$x, [int]$y)) { throw 'Windows denied pointer positioning' }
+        if (-not [RedXNative]::SetPhysicalCursorPos([int]$x, [int]$y)) { throw 'Windows denied pointer positioning' }
     }
     switch ($request.action) {
         'move' { Move-To $request.x $request.y }
@@ -90,7 +90,7 @@ public static class RedXNative {
             else { throw 'Unsupported key' }
             $mods=@{command=91;control=17;option=18;shift=16}; $pressed=New-Object 'System.Collections.Generic.List[int]'
             try {
-                foreach ($m in @($request.modifiers)) {
+                foreach ($m in @($request.modifiers | Where-Object { $null -ne $_ })) {
                     if (-not $mods.ContainsKey([string]$m)) { throw 'Unsupported modifier' }
                     [RedXNative]::Key([uint16]$mods[$m],0,0); $pressed.Add($mods[$m])
                 }

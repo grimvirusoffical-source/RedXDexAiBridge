@@ -13,7 +13,7 @@ async function dispatch(message,context={}){
   else if(message.method==='tools/call'){
    if(typeof message.params?.name!=='string')throw Error('Missing tool name');
    const args=message.params.arguments||{};if(!args||typeof args!=='object'||Array.isArray(args))throw Error('Tool arguments must be an object');
-   const x=await perform(message.params.name,args,context);result=x.image?{content:[{type:'image',data:x.image,mimeType:'image/png'}]}:{content:[{type:'text',text:x.text}],...(x.structuredContent?{structuredContent:x.structuredContent}:{})};
+   const x=await perform(message.params.name,args,context);result=x.image?{content:[...(x.text?[{type:'text',text:x.text}]:[]),{type:'image',data:x.image,mimeType:'image/png'}]}:{content:[{type:'text',text:x.text}],...(x.structuredContent?{structuredContent:x.structuredContent}:{})};
   }else return {jsonrpc:'2.0',id:message.id,error:{code:-32601,message:'Method not found'}};
   return {jsonrpc:'2.0',id:message.id,result};
  }catch(error){return message.method==='tools/call'?{jsonrpc:'2.0',id:message.id,result:{content:[{type:'text',text:error.message}],isError:true}}:{jsonrpc:'2.0',id:message.id,error:{code:-32603,message:'Request failed'}};}

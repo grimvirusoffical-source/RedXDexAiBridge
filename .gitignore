@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/redxdex-control
+build/redxdex-control.exe
 *.enc
 .env*
 *.p8

@@ -43,10 +43,10 @@ const definitions=[
 {name:'read_text_file',description:'Read UTF-8 text inside approved folders',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}},
 {name:'write_text_file',description:'Write UTF-8 text inside approved folders (requires write permission)',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'}},required:['path','content']}},
 {name:'run_command',description:'Run a command with argument array inside an approved working directory (requires terminal permission)',inputSchema:{type:'object',properties:{command:{type:'string'},args:{type:'array',items:{type:'string'}},cwd:{type:'string'}},required:['command','cwd']}},
-{name:'desktop_mouse',description:'Move or click the desktop mouse (requires Accessibility permission)',inputSchema:{type:'object',properties:{x:{type:'integer'},y:{type:'integer'},click:{type:'boolean'}},required:['x','y']}},
+{name:'desktop_mouse',description:'Move, click, drag or scroll on the approved desktop. Windows uses physical screen pixels: apply the screenshot imageToScreen mapping before supplying coordinates.',inputSchema:{type:'object',properties:{x:{type:'integer'},y:{type:'integer'},click:{type:'boolean'}},required:['x','y']}},
 {name:'desktop_type',description:'Type text into focused desktop application (requires Accessibility permission)',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}},
 {name:'open_application',description:'Open a named desktop application',inputSchema:{type:'object',properties:{name:{type:'string'}},required:['name']}},
-{name:'desktop_screenshot',description:'Capture desktop screen after OS approval (requires screenshot permission)',inputSchema:{type:'object',properties:{},additionalProperties:false}}
+{name:'desktop_screenshot',description:'Capture the approved desktop. On Windows returns an image plus imageToScreen coordinate mapping for scaled or multiple displays.',inputSchema:{type:'object',properties:{},additionalProperties:false}}
 ];
 const obj=(properties,required=[])=>({type:'object',properties,required,additionalProperties:false});
 const string={type:'string'};
@@ -95,7 +95,7 @@ if(name==='open_application'){await ensurePermission('apps',context);return nati
 if(name==='desktop_type'){await ensurePermission('keyboard',context);if(typeof args.text!=='string'||args.text.length>8000)throw Error('Text must be 8000 characters or fewer');await native.control({action:'type',text:args.text});return {text:'Typed into focused application'};}
 if(name==='desktop_key'){await ensurePermission('keyboard',context);await native.control({action:'key',key:args.key,modifiers:args.modifiers||[]});return {text:'Key sent'};}
 if(name==='desktop_mouse'){await ensurePermission('mouse',context);const action=args.action||(args.click?'click':'move');if(!['move','click','drag','scroll'].includes(action))throw Error('Invalid mouse action');await native.control({...args,action});return {text:'Mouse action completed: '+action};}
-if(name==='desktop_screenshot'){await ensurePermission('screenshot',context);return {image:await native.screenshot()};}
+if(name==='desktop_screenshot'){await ensurePermission('screenshot',context);const capture=await native.screenshotCapture();return {image:capture.data,text:capture.text};}
 if(name==='process_start'){await ensurePermission('terminal',context);const cwd=allowedPath(args.cwd);return {text:JSON.stringify(processes.start({...args,cwd,clientId}))};}
 if(name==='process_list'){await ensurePermission('terminal',context);return {text:JSON.stringify(processes.list(clientId))};}
 if(name==='process_output'){await ensurePermission('terminal',context);return {text:JSON.stringify(processes.read(args.id,clientId))};}

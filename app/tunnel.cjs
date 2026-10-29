@@ -127,7 +127,7 @@ class Tunnel {
       if (!this.desired || generation !== this.generation || !this.child || this.state.url !== url) return;
       this.retries = 0;
       this.set({phase: 'online', lastCheckedAt: Date.now(), message: this.configValue
-        ? 'Public endpoint verified. Your VPS relay keeps this address across Mac app restarts. OAuth approval is required for new AIs.'
+        ? 'Public endpoint verified. Your VPS relay keeps this address across app restarts. OAuth approval is required for new AIs.'
         : 'Public endpoint verified. Temporary address changes when this tunnel restarts; update remote clients afterward.'});
     } catch (error) {
       if (this.desired && generation === this.generation && this.child) this.set({phase: 'unreachable', lastCheckedAt: Date.now(), message: 'Remote endpoint is not reachable: ' + error.message + '. Local MCP remains available; checking again automatically.'});
