@@ -3,7 +3,8 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cryp
 const MARKER='X-RedXAI-Managed=true';
 function configureStartup(app,enabled,{platform=process.platform,env=process.env,configDirectory}={}){
  if(typeof enabled!=='boolean')throw Error('Startup preference must be a boolean');
- if(platform==='darwin'||platform==='win32'){app.setLoginItemSettings({openAtLogin:enabled});return {enabled,platform};}
+ if(platform==='darwin'){app.setLoginItemSettings({openAtLogin:enabled});return {enabled,platform};}
+ if(platform==='win32'){const value={openAtLogin:enabled};if(enabled)value.args=['--connect-remote'];app.setLoginItemSettings(value);return {enabled,platform};}
  if(platform!=='linux')throw Error('Automatic startup is not supported on this platform');
  const config=configDirectory||env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config');
  if(!path.isAbsolute(config))throw Error('Linux configuration directory must be absolute');

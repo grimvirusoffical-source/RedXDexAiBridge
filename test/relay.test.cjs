@@ -41,9 +41,10 @@ test('VPS transport reports unreachable, recovers, and does not reconnect after 
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'redxdex-relay-'));
   const key=path.join(dir,'key'), known=path.join(dir,'known');fs.writeFileSync(key,'test');fs.writeFileSync(known,'test');
   fs.writeFileSync(path.join(dir,'remote.json'),JSON.stringify({...config,identityFile:key,knownHostsFile:known}));
+  const temporaryBinary=path.join(dir,'cloudflared');fs.writeFileSync(temporaryBinary,'test');
   let healthy=false, spawned=0, killed=0;
   const spawn=()=>{spawned++;const child=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>{killed++;child.emit('exit',0,'SIGTERM');};return child;};
-  const tunnel=new Tunnel(()=>{}, {root:dir,spawn,fetch:async()=>{
+  const tunnel=new Tunnel(()=>{}, {root:dir,spawn,temporaryBinary,fetch:async()=>{
     if(!healthy)throw Error('network unavailable');
     return {ok:true,json:async()=>({resource:config.publicOrigin+'/mcp',authorization_servers:[config.publicOrigin]})};
   }});
@@ -52,8 +53,25 @@ test('VPS transport reports unreachable, recovers, and does not reconnect after 
     assert.equal(tunnel.status().phase,'connecting');
     await tunnel.check();assert.equal(tunnel.status().phase,'unreachable');
     healthy=true;await tunnel.check();assert.equal(tunnel.status().phase,'online');
-    tunnel.child.emit('exit',1,null);assert.equal(tunnel.status().phase,'retrying');
+    tunnel.child.emit('exit',1,null);assert.equal(tunnel.status().phase,'connecting');assert.equal(tunnel.status().mode,'temporary');
+    assert.equal(spawned,2);
     tunnel.stop();assert.equal(tunnel.status().phase,'off');assert.equal(tunnel.desired,false);
-    assert.equal(spawned,1);assert.equal(killed,0);
+    assert.equal(killed,1);
   } finally {tunnel.stop();fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('VPS relay falls back when its public endpoint remains unreachable', async () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'redxdex-relay-fallback-'));
+  const key=path.join(dir,'key'), known=path.join(dir,'known'), temporaryBinary=path.join(dir,'cloudflared');
+  fs.writeFileSync(key,'test');fs.writeFileSync(known,'test');fs.writeFileSync(temporaryBinary,'test');
+  fs.writeFileSync(path.join(dir,'remote.json'),JSON.stringify({...config,identityFile:key,knownHostsFile:known}));
+  let spawned=0,killed=0;
+  const spawn=()=>{spawned++;const child=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>{killed++;child.emit('exit',0,'SIGTERM');};return child;};
+  const tunnel=new Tunnel(()=>{}, {root:dir,spawn,temporaryBinary,fetch:async()=>{throw Error('network unavailable');}});
+  try{
+    await tunnel.start('http://127.0.0.1:45678/mcp');
+    await tunnel.check();assert.equal(tunnel.status().phase,'unreachable');
+    await tunnel.check();assert.equal(tunnel.status().phase,'connecting');assert.equal(tunnel.status().mode,'temporary');
+    assert.equal(spawned,2);assert.equal(killed,1);
+  }finally{tunnel.stop();fs.rmSync(dir,{recursive:true,force:true});}
 });
