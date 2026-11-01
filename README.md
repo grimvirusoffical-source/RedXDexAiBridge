@@ -30,8 +30,8 @@ The [Releases page](https://github.com/grimvirusoffical-source/RedXDexAiBridge/r
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | One-click, per-user `.exe` installer | Version 0.10.11 published; executable is currently unsigned |
-| Linux x64 | AppImage and Debian `.deb` | Version 0.10.11 published |
+| Windows x64 | One-click, per-user `.exe` installer | Version 0.10.12 published; executable is currently unsigned |
+| Linux x64 | AppImage and Debian `.deb` | Version 0.10.12 published |
 | macOS Apple Silicon | Earlier Developer ID–signed DMG | Version 0.10.8 source checks passed; no new signed or notarized Mac installer was published |
 
 Windows may show a SmartScreen warning until a verified code-signing certificate is configured. Never treat a successful build as proof of signing or notarization.
