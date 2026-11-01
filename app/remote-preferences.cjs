@@ -15,7 +15,9 @@ function enabled(root){
  if(!fs.existsSync(path.join(root,'openai-tunnel-id.txt')))return false;
  try{
   const status=JSON.parse(fs.readFileSync(path.join(root,'remote-status.json'),'utf8'));
-  return ACTIVE.has(status.phase)&&typeof status.url==='string'&&status.url.startsWith('https://');
+  const previouslyConnected=ACTIVE.has(status.phase)&&typeof status.url==='string'&&status.url.startsWith('https://');
+  if(previouslyConnected)remember(root,true); // Persist the confirmed legacy opt-in before the old status can turn off.
+  return previouslyConnected;
  }catch{return false;}
 }
 function remember(root,value){
