@@ -37,13 +37,20 @@ async function pinnedAddress(url,lookup=dns.lookup){
  if(!Array.isArray(records)||!records.length||records.some(x=>!publicAddress(x.address)))throw Error('Website resolves to a private, reserved or invalid network address');
  return records[0];
 }
+function pinnedLookup(record){
+ return (_hostname,options,callback)=>{
+  if(typeof options==='function'){callback=options;options={};}
+  if(options?.all)callback(null,[{address:record.address,family:record.family}]);
+  else callback(null,record.address,record.family);
+ };
+}
 function requestPinned(url,{lookup=dns.lookup,signal,maxBytes=384*1024,timeoutMs=9000}={}){
  return pinnedAddress(url,lookup).then(ip=>new Promise((resolve,reject)=>{
   if(signal?.aborted)return reject(Error('Crawl stopped'));
   const module=url.protocol==='https:'?https:http;
   const opts={hostname:url.hostname,port:url.protocol==='https:'?443:80,path:url.pathname+url.search,
    method:'GET',signal,timeout:timeoutMs,servername:url.hostname,
-   lookup:(_hostname,_opts,cb)=>cb(null,ip.address,ip.family),
+   lookup:pinnedLookup(ip),
    headers:{'User-Agent':'RedXDexAiBridge-Crawler/0.10.9','Accept':'text/html,text/plain,application/xhtml+xml','Accept-Encoding':'identity','Connection':'close'}};
   let settled=false;const settle=(error,data)=>{if(settled)return;settled=true;error?reject(error):resolve(data);};
   const req=module.request(opts,res=>{
@@ -124,4 +131,4 @@ function pageLinks(html,current,origin){
  }
  return result;
 }
-module.exports={normalizeTarget,publicAddress,pinnedAddress,requestPinned,fetchPublicPage,robotsRules,pageText,pageLinks};
+module.exports={normalizeTarget,publicAddress,pinnedAddress,pinnedLookup,requestPinned,fetchPublicPage,robotsRules,pageText,pageLinks};
