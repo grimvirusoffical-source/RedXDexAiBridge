@@ -108,9 +108,9 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           EXPECTED_TAG="v$(node -p "require('./package.json').version")"
           if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then echo "Release tag does not match package version" >&2; exit 1; fi
-          test -f RELEASE-0.10.8.md
+          test -f "RELEASE-${RELEASE_TAG#v}.md"
           if ! gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --prerelease --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux candidate" --notes-file RELEASE-0.10.8.md --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" --draft --prerelease --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux candidate" --notes-file "RELEASE-${RELEASE_TAG#v}.md" --target "$GITHUB_SHA"
           fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           test "$(find artifacts -type f -name '*.exe' | wc -l)" -ge 1
