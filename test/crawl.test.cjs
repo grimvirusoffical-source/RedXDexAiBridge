@@ -29,6 +29,15 @@ test('DNS pinning requires all records to be public; mixed private DNS is reject
  await assert.rejects(net.pinnedAddress(u,async()=>[{address:'93.184.216.34',family:4},{address:'127.0.0.1',family:4}]),/private|reserved/);
  assert.equal((await net.pinnedAddress(u,async()=>[{address:'93.184.216.34',family:4}])).address,'93.184.216.34');
 });
+test('pinned socket lookup supports both Node legacy and all-address callbacks',()=>{
+ const lookup=net.pinnedLookup({address:'93.184.216.34',family:4});
+ lookup('docs.example.org',{all:true},(error,entries)=>{
+  assert.equal(error,null);assert.deepEqual(entries,[{address:'93.184.216.34',family:4}]);
+ });
+ lookup('docs.example.org',{family:4},(error,address,family)=>{
+  assert.equal(error,null);assert.equal(address,'93.184.216.34');assert.equal(family,4);
+ });
+});
 test('robots directives select a matching agent, longest path wins, and delay is capped',()=>{
  const file='User-agent: *\nDisallow: /blocked\nUser-agent: RedXDexAiBridge\nDisallow: /private\nAllow: /private/public\nCrawl-delay: 9\n';
  const rules=net.robotsRules(file);
