@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const quick=require('../app/quick-setup.cjs'),{ClientStore}=require('../app/clients.cjs');
 test('one-click options support local AIs, generic MCP and remote OAuth without other kinds',()=>{
- assert.deepEqual(quick.AI_TYPES,['codex','claude','vscode','cursor','generic','remote']);
+ assert.deepEqual(quick.AI_TYPES,['codex','claude','vscode','cursor','gemini','generic','remote']);
  for(const kind of quick.AI_TYPES)assert.equal(quick.validateType(kind),kind);
  for(const kind of ['admin','terminal','file:///etc/passwd','other\nkind',''])assert.throws(()=>quick.validateType(kind));
 });
@@ -55,4 +55,8 @@ test('one-click UI is linked into the packaged app and handlers are exposed by p
  for(const id of ['quick-computer-setup','quick-ai-kind','quick-add-ai','quick-copy-connection'])assert.match(html,new RegExp('id="'+id+'"'));
  assert.match(html,/quick-setup-ui\.js/);assert.match(preload,/setup:quick/);assert.match(preload,/setup:addAI/);
  assert.match(main,/ipc\('setup:quick'/);assert.match(main,/ipc\('setup:addAI'/);
+ assert.match(main,/connectionPending:!verified/);assert.doesNotMatch(main,/if\(!status\?\.url\)throw/);
+ const setupUI=fs.readFileSync(path.join(__dirname,'..','app','quick-setup-ui.js'),'utf8');
+ assert.match(setupUI,/api\.on\?\.\('remote',remoteChanged\)/);
+ assert.match(html,/value="gemini"/);
 });
