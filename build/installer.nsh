@@ -24,4 +24,20 @@ optional_gh:
     MessageBox MB_ICONEXCLAMATION|MB_OK "GitHub CLI could not be installed automatically. Terminal repository workflows require it; Bridge updates remain available."
   ${EndIf}
 optional_done:
+  ; electron-builder creates the desktop shortcut before customInstall.
+  ; Give the user a choice on fresh interactive installations.
+  IfSilent shortcut_done
+  ${IfNot} ${isUpdated}
+    MessageBox MB_ICONQUESTION|MB_YESNO "Create a Red-XAI Bridge desktop shortcut?$\r$\n$\r$\nChoose No to install the desktop app without a desktop shortcut. The Start menu shortcut will still be available." IDYES taskbar_offer
+    Delete "$newDesktopLink"
+taskbar_offer:
+    ; Windows does not permit installers to silently pin to taskbar.
+    MessageBox MB_ICONQUESTION|MB_YESNO "Would you like help pinning Red-XAI Bridge to the Windows taskbar?$\r$\n$\r$\nChoose Yes to show a pinning guide when you first open the desktop app. Windows requires you to confirm the pin yourself." IDNO shortcut_done
+    CreateDirectory "$APPDATA\redxdex-ai-bridge"
+    FileOpen $R0 "$APPDATA\redxdex-ai-bridge\taskbar-pin-request.txt" w
+    IfErrors shortcut_done
+    FileWrite $R0 "requested"
+    FileClose $R0
+  ${EndIf}
+shortcut_done:
 !macroend

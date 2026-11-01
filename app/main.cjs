@@ -109,9 +109,20 @@ if(process.argv.includes('--vortex-diagnostic')){
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
-   if(captureError){result.uiCapture=false;result.uiCaptureError=captureError.message;const image=Buffer.from(await native.screenshot(),'base64');fs.writeFileSync(path.join(out,'desktop.png'),image);result.desktopCaptureFallback=true;}
+   if(captureError){
+    result.uiCapture=false;result.uiCaptureError=captureError.message;
+    try {
+     const fallback=await Promise.race([native.screenshot(),new Promise((_,reject)=>setTimeout(()=>reject(Error('Desktop fallback capture timed out on this runner')),5000))]);
+     fs.writeFileSync(path.join(out,'desktop.png'),Buffer.from(fallback,'base64'));
+     result.desktopCaptureFallback=true;
+    } catch(error) {
+     // A headless CI runner may have no capturable display. Do not hang the
+     // complete build: the separate native smoke exercises real desktop input.
+     result.desktopCaptureFallback=false;result.desktopCaptureError=error.message;
+    }
+   }
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
-   quitting=true;app.quit();return;
+   quitting=true;app.exit(0);return;
   }
   if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
   if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true||remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
@@ -202,6 +213,15 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('github:status',async()=>require('./github-cli.cjs').status());
  ipc('tools:status',()=>require('./optional-tools.cjs').status());
  ipc('optional:install',async tool=>{const {IDS}=require('./optional-tools.cjs');if(!Object.hasOwn(IDS,tool))throw Error('Unknown optional tool');const choice=await dialog.showMessageBox(win,{type:'question',buttons:['Cancel','Install selected tool'],defaultId:0,cancelId:0,title:'Optional developer tool',message:'Install '+IDS[tool].label+'?',detail:IDS[tool].reason+'\nThe package manager may request operating-system authentication.'});if(choice.response!==1)return {cancelled:true,message:'Installation cancelled'};return require('./optional-install.cjs').begin(tool);});
+ ipc('taskbar:pin-status',()=>({available:process.platform==='win32',pending:require('./taskbar-onboarding.cjs').pending(app.getPath('userData'))}));
+ ipc('taskbar:pin-dismiss',()=>require('./taskbar-onboarding.cjs').dismiss(app.getPath('userData')));
+ ipc('taskbar:pin-guide',async()=>{
+  if(process.platform!=='win32')return {opened:false,message:'Taskbar pinning is available only on Windows.'};
+  const guide=require('./taskbar-onboarding.cjs');
+  guide.dismiss(app.getPath('userData'));
+  await shell.openExternal(guide.HELP_URL);
+  return {opened:true,message:'Windows lets you right-click the running app icon and choose Pin to taskbar.'};
+ });
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
  ipc('vortex:status',()=>vortexStatus());
  ipc('vortex:connection',()=>({...vortexConfig(),keySaved:fs.existsSync(secretFile('vortex-key'))}));

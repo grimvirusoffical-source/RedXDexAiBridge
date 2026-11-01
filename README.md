@@ -1,5 +1,10 @@
 # Red-XAI Bridge
 
+## Windows desktop shortcut and taskbar choices (0.10.10)
+
+A fresh interactive Windows installer asks whether to create a desktop shortcut. The application installs either way and keeps a Start menu entry. A separate optional choice offers help pinning the running application to the Windows taskbar on first launch. Windows requires the owner to confirm the pin manually; setup never silently pins an application. In-place and silent updates do not change existing shortcut preferences.
+
+
 ## Version 0.10.9: background jobs and crawling
 
 **Background execution:** A running Bridge can finish approved terminal jobs when its window is hidden. Use `process_start` to launch a process and `process_list` / `process_output` / `process_stop` to monitor it. Background-only mode blocks direct mouse, keyboard, and application-focus tools, but permits approved non-focus work. Explicit process timeouts can extend to 24 hours.
