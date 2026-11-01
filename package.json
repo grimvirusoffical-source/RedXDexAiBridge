@@ -1,6 +1,6 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.9",
+  "version": "0.10.10",
   "private": true,
   "description": "Red-XAI Bridge — permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
