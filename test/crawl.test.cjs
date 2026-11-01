@@ -35,7 +35,8 @@ test('robots directives select a matching agent, longest path wins, and delay is
  assert.equal(rules.allowed('/private/secret'),false);
  assert.equal(rules.allowed('/private/public/article'),true);
  assert.equal(rules.allowed('/blocked'),true);
- assert.equal(rules.delayMs,3000);
+ assert.equal(rules.delayMs,9000);
+ assert.throws(()=>net.robotsRules('User-agent: *\nCrawl-delay: 120'),/safe 30-second/);
  const common=net.robotsRules('User-agent: *\nDisallow: /\n');
  assert.equal(common.allowed('/index'),false);
 });
