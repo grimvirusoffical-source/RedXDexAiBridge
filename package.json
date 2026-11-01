@@ -60,7 +60,7 @@
         "owner": "grimvirusoffical-source",
         "repo": "RedXDexAiBridge",
         "releaseType": "release",
-        "private": true
+        "private": false
       }
     ],
     "extraResources": [
@@ -102,7 +102,8 @@
       "deleteAppDataOnUninstall": false,
       "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}",
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "include": "build/installer.nsh"
     },
     "linux": {
       "icon": "build/icons",
