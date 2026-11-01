@@ -109,9 +109,20 @@ if(process.argv.includes('--vortex-diagnostic')){
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
-   if(captureError){result.uiCapture=false;result.uiCaptureError=captureError.message;const image=Buffer.from(await native.screenshot(),'base64');fs.writeFileSync(path.join(out,'desktop.png'),image);result.desktopCaptureFallback=true;}
+   if(captureError){
+    result.uiCapture=false;result.uiCaptureError=captureError.message;
+    try {
+     const fallback=await Promise.race([native.screenshot(),new Promise((_,reject)=>setTimeout(()=>reject(Error('Desktop fallback capture timed out on this runner')),5000))]);
+     fs.writeFileSync(path.join(out,'desktop.png'),Buffer.from(fallback,'base64'));
+     result.desktopCaptureFallback=true;
+    } catch(error) {
+     // A headless CI runner may have no capturable display. Do not hang the
+     // complete build: the separate native smoke exercises real desktop input.
+     result.desktopCaptureFallback=false;result.desktopCaptureError=error.message;
+    }
+   }
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
-   quitting=true;app.quit();return;
+   quitting=true;app.exit(0);return;
   }
   if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
   if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true||remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
