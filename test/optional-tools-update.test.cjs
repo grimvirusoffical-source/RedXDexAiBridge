@@ -17,7 +17,7 @@ test('public GitHub update feed never requires GitHub CLI or credentials',()=>{
  assert.doesNotMatch(main,/auth','token'/);
 });
 test('Node Git and GitHub CLI are optional and have distinct explanations',()=>{
- const states=optional.status({platform:'linux',env:{PATH:'/nonexistent'}});
+ const states=optional.status({platform:'linux',env:{PATH:'/nonexistent'},lookup:()=>null});
  assert.deepEqual(Object.keys(states),['node','git','gh']);
  for(const [key,info] of Object.entries(states)){
   assert.equal(info.installed,false);
@@ -25,7 +25,7 @@ test('Node Git and GitHub CLI are optional and have distinct explanations',()=>{
   assert.ok(optional.IDS[key].winget);
  }
  const winRoot='C:\\FakePrograms';
- const found=optional.installed('gh',{platform:'win32',env:{PATH:'',ProgramFiles:winRoot,SystemRoot:'C:\\FakeWindows',LOCALAPPDATA:'C:\\FakeLocal'},exists:file=>file==='C:\\FakePrograms\\GitHub CLI\\gh.exe'});
+ const found=optional.installed('gh',{platform:'win32',env:{PATH:'',ProgramFiles:winRoot,SystemRoot:'C:\\FakeWindows',LOCALAPPDATA:'C:\\FakeLocal'},exists:file=>file==='C:\\FakePrograms\\GitHub CLI\\gh.exe',lookup:()=>null});
  assert.equal(found,'C:\\FakePrograms\\GitHub CLI\\gh.exe');
 });
 test('GitHub CLI connection reports missing, unauthed and logged-in states separately',async()=>{
