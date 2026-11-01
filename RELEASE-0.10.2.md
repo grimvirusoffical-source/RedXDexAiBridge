@@ -1,14 +1,14 @@
 # Red-XAI Bridge 0.10.2
 
-## Background and simultaneous AI connections
+## Background and simultaneous client connections
 
 - Native macOS/Windows login startup and managed Linux freedesktop autostart, without overwriting custom user entries. Failed startup registration does not make the app unlaunchable.
 - Optional quiet startup in the system tray/menu bar, alongside the existing keep-running-on-close setting.
 - Global or per-client background-only policy for direct tools. It blocks mouse, keyboard and app-launch/focus calls while leaving approved file, terminal and screen tools available.
 - This policy is not a filesystem or OS sandbox: a client with terminal permission can run programs that affect the desktop. Use a separate Cloud PC/virtual session for genuine independent graphical desktops.
-- Total and per-AI process/request limits are configurable. A value of zero removes the application-imposed cap for that setting; available CPU, memory and operating-system resources remain finite. Default quotas protect the machine and let other clients retain their own slots.
-- Each authenticated AI retains its own process sessions and permissions. One AI cannot read, feed or terminate another AI's terminal process.
-- Direct input/app actions hold an exclusive 30-second idle desktop lease, so two AIs do not interleave clicks and keystrokes. `desktop_release` releases only the caller's lease. `desktop_lease_status` reports availability without identifying another client.
+- Total and per-client process/request limits are configurable. A value of zero removes the application-imposed cap for that setting; available CPU, memory and operating-system resources remain finite. Default quotas protect the machine and let other clients retain their own slots.
+- Each authenticated client retains its own process sessions and permissions. One client cannot read, feed or terminate another client's terminal process.
+- Direct input/app actions hold an exclusive 30-second idle desktop lease, so two clients do not interleave clicks and keystrokes. `desktop_release` releases only the caller's lease. `desktop_lease_status` reports availability without identifying another client.
 - Emergency stop and client revocation override permissions and reset desktop ownership.
 
 ## Vortex and other clients
