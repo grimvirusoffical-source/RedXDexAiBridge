@@ -67,6 +67,21 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
   await win.loadFile(path.join(__dirname,'index.html'));
+  // DMG, AppImage and Debian packages cannot provide the interactive NSIS optional-tools page.
+  // Offer a first-run explanation without installing system packages or bypassing consent.
+  if(app.isPackaged&&process.platform!=='win32'&&!process.env.REDXDEX_SMOKE_OUTPUT&&win.isVisible()){
+   const notice=path.join(app.getPath('userData'),'optional-tools-onboarding.json');
+   if(!fs.existsSync(notice)){
+    atomicJSON(notice,{shownAt:new Date().toISOString()});
+    const prompt=setTimeout(async()=>{
+     if(!win||win.isDestroyed())return;
+     const choice=await dialog.showMessageBox(win,{type:'info',buttons:['Not now','Review optional installations'],defaultId:0,cancelId:0,
+      title:'Optional developer tools',message:'Node.js, Git and GitHub CLI are optional.',
+      detail:'Node.js runs scripts and builds the Bridge from source. Git supports local repository commands. GitHub CLI supports repository sign-in and terminal workflows. The installed Bridge and public software updates work without them. Nothing is installed without consent.'});
+     if(choice.response===1)await win.webContents.executeJavaScript("document.querySelector('[data-page=\\\"settings\\\"]')?.click()").catch(()=>{});
+    },650);prompt.unref?.();
+   }
+  }
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))console.error('SMOKE UI loaded');
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){
    await new Promise(r=>setTimeout(r,1200));console.error('SMOKE snapshot requested');
