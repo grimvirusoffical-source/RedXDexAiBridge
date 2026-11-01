@@ -47,7 +47,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(!c){c=clients.create(client==='claude'?'Claude Desktop':client==='vscode'?'VS Code':client==='cursor'?'Cursor':client==='gemini'?'Gemini CLI':client,'local');defaultClient(c.id);atomicJSON(credentialFile,{id:c.id,token:c.token});}
   return {command:app.isPackaged?process.execPath:setup.nodeCommand(),args:[app.isPackaged?path.join(process.resourcesPath,'bridge-adapter.cjs'):path.join(__dirname,'adapter.cjs')],env:{...(app.isPackaged?{ELECTRON_RUN_AS_NODE:'1'}:{}),REDXDEX_CLIENT_KEY_FILE:credentialFile,REDXDEX_MANAGED:'1'}};
  }
- async function configureUpdateFeed(){const key=readSecret('github-updates');if(!key)throw Error('Private updates need GitHub access. Click “Use this computer’s GitHub login” in Settings. No token is bundled with the app.');require('electron-updater').autoUpdater.setFeedURL({provider:'github',owner:'grimvirusoffical-source',repo:'RedXDexAiBridge',private:true,token:key});}
+ async function configureUpdateFeed(){require('electron-updater').autoUpdater.setFeedURL(require('./public-updates.cjs').PUBLIC_FEED);}
  async function checkUpdates(){await configureUpdateFeed();await updateController.check();return updateController.status();}
  app.whenReady().then(async()=>{
   fs.mkdirSync(core.root,{recursive:true,mode:0o700});fs.chmodSync(core.root,0o700);
@@ -183,7 +183,9 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));
- ipc('updates:github',async()=>{const bin=require('./platform.cjs').findExecutable('gh');if(!bin)throw Error('GitHub CLI not found. Sign in with gh auth login first.');const {stdout}=await require('node:util').promisify(cp.execFile)(bin,['auth','token','--hostname','github.com'],{timeout:10000,maxBuffer:16384});const value=stdout.trim();if(!value)throw Error('GitHub is not signed in');saveSecret('github-updates',value);return {ok:true,message:'GitHub access saved using OS-backed encryption; credentials are not included in the application.'};});
+ ipc('updates:github',async()=>require('./github-cli.cjs').beginLogin());
+ ipc('github:status',async()=>require('./github-cli.cjs').status());
+ ipc('tools:status',()=>require('./optional-tools.cjs').status());
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
  ipc('vortex:status',()=>vortexStatus());
  ipc('vortex:connection',()=>({...vortexConfig(),keySaved:fs.existsSync(secretFile('vortex-key'))}));
