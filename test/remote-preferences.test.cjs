@@ -17,6 +17,9 @@ test('legacy saved owner tunnel is restored only when it was previously active',
  assert.equal(prefs.enabled(root),false);
  fs.writeFileSync(path.join(root,'remote-status.json'),JSON.stringify({phase:'online',url:'https://existing.example/mcp'}));
  assert.equal(prefs.enabled(root),true);
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'remote-preferences.json'),'utf8')),{autoConnect:true});
+ fs.writeFileSync(path.join(root,'remote-status.json'),JSON.stringify({phase:'off',url:null}));
+ assert.equal(prefs.enabled(root),true); // Clean quit no longer erases previous opt-in.
 }));
 test('explicit remote stop overrides legacy identity and survives restart',()=>fixture(root=>{
  fs.writeFileSync(path.join(root,'openai-tunnel-id.txt'),'legacy-identity');
