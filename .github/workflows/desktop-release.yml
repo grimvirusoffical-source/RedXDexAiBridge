@@ -39,6 +39,7 @@ jobs:
       - run: npm run prepare:native
       - run: npm run prepare:tunnel
       - name: Windows GUI and native tests
+        timeout-minutes: 5
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -50,6 +51,7 @@ jobs:
           & .\node_modules\.bin\electron.cmd scripts/desktop-smoke.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Linux GUI and native tests
+        timeout-minutes: 5
         if: runner.os == 'Linux'
         shell: bash
         run: |
