@@ -18,6 +18,7 @@ function serverSpec(){return {command:nodeCommand(),args:[mcpEntry()]};}
 function configFor(client,spec=serverSpec()){return client==='vscode'?{servers:{RedXDexAiBridge:{type:'stdio',...spec}}}:{mcpServers:{RedXDexAiBridge:spec}};}
 function configPath(client){
  if(client==='codex')return path.join(os.homedir(),'.codex','config.toml');
+ if(client==='gemini')return path.join(os.homedir(),'.gemini','settings.json');
  if(client==='claude')return process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support','Claude','claude_desktop_config.json'):process.platform==='win32'?path.join(process.env.APPDATA||path.join(os.homedir(),'AppData','Roaming'),'Claude','claude_desktop_config.json'):path.join(os.homedir(),'.config','Claude','claude_desktop_config.json');
  if(client==='vscode')return process.platform==='darwin'?path.join(os.homedir(),'Library','Application Support','Code','User','mcp.json'):process.platform==='win32'?path.join(process.env.APPDATA||path.join(os.homedir(),'AppData','Roaming'),'Code','User','mcp.json'):path.join(os.homedir(),'.config','Code','User','mcp.json');
  if(client==='cursor')return path.join(os.homedir(),'.cursor','mcp.json');
@@ -47,7 +48,7 @@ function configureCodex(spec, destination) {
 }
 function addClient(client,{destination=configPath(client),spec=serverSpec()}={}){
  if(client==='codex')return configureCodex(spec,destination);
- if(!['claude','vscode','cursor'].includes(client))throw Error('Unsupported client');
+ if(!['claude','vscode','cursor','gemini'].includes(client))throw Error('Unsupported client');
  if(!path.isAbsolute(destination))throw Error('Config destination must be absolute');
  // Only the two documented default config locations are accepted by the UI.
  if(destination!==configPath(client))throw Error('Only the default client config is supported');
