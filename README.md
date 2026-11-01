@@ -1,5 +1,14 @@
 # Red-XAI Bridge (RedXDexAiBridge)
 
+## One-click connection setup (0.10.4)
+
+The Overview page now has **One-click setup for this computer**. It checks the local authenticated MCP gateway and reports the active Windows/macOS/Linux desktop input state. It does **not** grant OS-level privacy consent, unlock an OS, or activate AI permissions without approval.
+
+On **AI connections**, **Add a new AI in one click** configures local Codex CLI, Claude Desktop, VS Code, or Cursor with an individual backed-up MCP configuration. **Other local MCP AI** creates a separately revocable credential and displays a loopback-only HTTP MCP URL and bearer token once; you paste these into the AI service, never a public tunnel. **Remote ChatGPT / MCP AI** starts the HTTPS tunnel and displays an OAuth connection URL; you still approve pairing in the remote service and in the Bridge. The UI will not embed an authentication token in a remote URL. New AI permissions default to **Ask**, not Always Allow.
+
+The Windows NSIS installer is now one-click per-user installation, without changing operating-system permission prompts. The Linux package script now first bundles the checksum-verified tunnel helper; the Debian installer declares `xdotool` and desktop dependencies. Linux X11 + xdotool supports global input when authorized. Wayland may offer screen capture via the desktop portal but does **not** provide global mouse/keyboard injection; choosing X11 is required for that capability. Native Linux CI validation is required before declaring a release fully tested on Linux.
+
+
 A permission-controlled desktop bridge for MCP-compatible AI clients, with embedded Vortex text chat. Source and releases remain in `grimvirusoffical-source/RedXDexAiBridge`.
 
 ## Install

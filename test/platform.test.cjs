@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {linuxPlan, validateInput} = require('../app/platform.cjs');
+const {linuxPlan, linuxTypeSteps, validateInput} = require('../app/platform.cjs');
 const {permissionStatus} = require('../app/native.cjs');
 
 test('desktop inputs reject injection and invalid coordinates before native execution', () => {

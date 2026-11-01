@@ -106,6 +106,35 @@ async function windowsControl(input) {
   return JSON.parse(output.replace(/^\uFEFF/, '').trim());
 }
 
+function linuxTypeSteps(text) {
+  validateInput({action:'type',text});
+  const steps = [];
+  let plain = '', unicodeKeys = [];
+  const flushPlain = () => {
+    if (!plain) return;
+    steps.push({args:['type','--clearmodifiers','--delay','1','--file','-'],stdin:plain});
+    plain = '';
+  };
+  const flushUnicode = () => {
+    if (!unicodeKeys.length) return;
+    steps.push({args:['key','--clearmodifiers',...unicodeKeys]});
+    unicodeKeys = [];
+  };
+  for (const character of text) {
+    const point = character.codePointAt(0);
+    if (point <= 0x7f) {
+      flushUnicode();
+      plain += character;
+    } else {
+      flushPlain();
+      unicodeKeys.push('U' + point.toString(16).toUpperCase());
+    }
+  }
+  flushPlain();
+  flushUnicode();
+  return steps;
+}
+
 async function linuxControl(input) {
   validateInput(input);
   const wayland = process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY;
@@ -130,7 +159,13 @@ async function linuxControl(input) {
   }
   const plan = linuxPlan(input);
   if (!xdotool) throw Error('Install xdotool to enable Linux X11 mouse and keyboard control');
-  if (plan.args.length) await execute(xdotool, plan.args, plan.stdin || '');
+  if (input.action === 'type' && /[^\x00-\x7f]/.test(input.text)) {
+    // X11 xdotool UTF-8 --file loses non-ASCII symbols on some keymaps.
+    // Use a separate X11 keysym for each Unicode character; no shell or clipboard.
+    for (const step of linuxTypeSteps(input.text)) {
+      await execute(xdotool, step.args, step.stdin || '');
+    }
+  } else if (plan.args.length) await execute(xdotool, plan.args, plan.stdin || '');
   return {ok: true, action: input.action};
 }
 
@@ -139,4 +174,4 @@ function childEnvironment(env=process.env){
  for(const key of ['PATH','Path','HOME','USERPROFILE','SystemRoot','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','TMPDIR','APPDATA','LOCALAPPDATA','DISPLAY','XAUTHORITY','WAYLAND_DISPLAY','XDG_RUNTIME_DIR','XDG_SESSION_TYPE','DBUS_SESSION_BUS_ADDRESS'])if(env[key]!==undefined)out[key]=env[key];
  out.LANG=env.LANG||'en_US.UTF-8';return out;
 }
-module.exports = {childEnvironment,findExecutable, execute, powershell, validateInput, linuxPlan, windowsControl, linuxControl};
+module.exports = {childEnvironment,findExecutable, execute, powershell, validateInput, linuxPlan, linuxTypeSteps, windowsControl, linuxControl};

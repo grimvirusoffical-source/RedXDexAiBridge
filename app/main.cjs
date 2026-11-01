@@ -3,7 +3,7 @@ const path=require('node:path'),fs=require('node:fs'),os=require('node:os'),cryp
 const {pathToFileURL}=require('node:url');
 const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImage,shell,clipboard}=require('electron');
 if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!process.env.REDXDEX_SMOKE_OUTPUT))throw Error('Self-test requires isolated data and output folders');
-const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs');
+const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
 let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,quitting=false;const activity=[];
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
@@ -70,6 +70,8 @@ if(process.argv.includes('--vortex-diagnostic')){
    const result=await win.webContents.executeJavaScript(`(async()=>{const s=await window.bridge.snapshot();return {title:document.title,version:s.version,tools:s.toolCount,gateway:s.gateway.running,pages:document.querySelectorAll('.page').length,visibleVersion:document.getElementById('app-version').textContent,preload:typeof window.bridge.answer==='function'};})()`);
    console.error('SMOKE snapshot returned');result.navigation=await win.webContents.executeJavaScript(`(()=>{const out=[];for(const b of document.querySelectorAll('[data-page]')){b.click();out.push({page:b.dataset.page,visible:!document.getElementById('page-'+b.dataset.page).hidden});}return out;})()`);
    if(result.navigation.some(x=>!x.visible))throw Error('A navigation page did not open');
+    result.quickSetup=await win.webContents.executeJavaScript("(async()=>{const check=await window.bridge.quickSetup();const ai=await window.bridge.addAi('generic','One Click CI Fixture');return {gatewayRunning:check.gatewayRunning,permissionDefault:check.permissionDefault,kind:ai.kind,generatedCredential:typeof ai.oneTimeInstructions==='string'&&ai.oneTimeInstructions.includes('Bearer '),clientAdded:!!ai.clientId,buttonFound:!!document.getElementById('quick-computer-setup'),selectorFound:!!document.getElementById('quick-ai-kind')};})()");
+    if(!result.quickSetup.gatewayRunning||!result.quickSetup.generatedCredential||!result.quickSetup.clientAdded||!result.quickSetup.buttonFound||!result.quickSetup.selectorFound||result.quickSetup.permissionDefault!=='ask')throw Error('One-click setup smoke test failed');
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
@@ -94,6 +96,32 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('setup:localPlugin',()=>{clientSpec('chatgpt');return {message:'Local ChatGPT plugin paired. Enable the RedXDexAiBridge plugin in a client that can execute local MCP tools. Remote ChatGPT sessions still require the HTTPS/OAuth connection.'};});
  ipc('setup:connect',async client=>{await startGateway();const spec=clientSpec(client),r=setup.addClient(client,{spec});emit('clients',clients.list());return r;});
  ipc('setup:config',client=>setup.configFor(client,clientSpec(client)));
+  ipc('setup:quick',async()=>{
+    const local=await startGateway();
+    const nativeStatus=await native.control({action:'status'}).catch(error=>({accessibility:false,inputSupported:false,message:error.message}));
+    const checks=quickSetup.readiness({nativeStatus});
+    return {...checks,gatewayRunning:local.running,gatewayUrl:local.url,permissionDefault:'ask',message:checks.readyForFullDesktop?'Bridge is ready. Select an AI and connect it; permissions remain Ask until you approve them.':'The local MCP gateway is ready. See platform guidance for desktop input and OS permissions.'};
+  });
+  ipc('setup:addAI',async(kind,name)=>{
+    quickSetup.validateType(kind);
+    const local=await startGateway();
+    if(kind==='generic'){
+      const safeName=quickSetup.validateName(name);
+      const c=clients.create(safeName,'manual');
+      defaultClient(c.id);
+      emit('clients',clients.list());
+      return {kind,clientId:c.id,name:c.name,oneTimeInstructions:quickSetup.instructionsFor(kind,{clientName:c.name,url:local.url,token:c.token}),message:'New AI credential created. Copy it now: it cannot be recovered later. Permissions default to Ask. The remote tunnel was NOT enabled.'};
+    }
+    if(kind==='remote'){
+      const status=await tunnel.start(local.url);
+      if(!status?.url)throw Error('Remote tunnel did not return an authenticated HTTPS endpoint.');
+      return {kind,remoteUrl:status.url,oneTimeInstructions:quickSetup.instructionsFor(kind),message:'Remote link prepared. Copy the HTTPS URL to the remote AI using OAuth, then approve the pairing request in this app. A temporary tunnel may change on restart.'};
+    }
+    const spec=clientSpec(kind);
+    const result=setup.addClient(kind,{spec});
+    emit('clients',clients.list());
+    return {kind,path:result.path,backup:result.backup,message:result.message+' Permissions default to Ask; no computer access has been silently granted.'};
+  });
  ipc('setup:exportVortex',async()=>{
   const result=await dialog.showSaveDialog(win,{title:'Export Vortex MCP connection',defaultPath:path.join(app.getPath('downloads'),'Red-XAI-Bridge-MCP.json'),filters:[{name:'MCP JSON',extensions:['json']}]});
   if(result.canceled||!result.filePath)return {cancelled:true};
