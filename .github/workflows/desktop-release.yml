@@ -110,7 +110,7 @@ jobs:
           if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then echo "Release tag does not match package version" >&2; exit 1; fi
           test -f "RELEASE-${RELEASE_TAG#v}.md"
           if ! gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --prerelease --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux candidate" --notes-file "RELEASE-${RELEASE_TAG#v}.md" --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" --draft --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux" --notes-file "RELEASE-${RELEASE_TAG#v}.md" --target "$GITHUB_SHA"
           fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           test "$(find artifacts -type f -name '*.exe' | wc -l)" -ge 1
@@ -119,7 +119,7 @@ jobs:
           find artifacts -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' -o -name '*.blockmap' -o -name 'SHA256SUMS-*' \) -print0 | while IFS= read -r -d '' file; do
             gh release upload "$RELEASE_TAG" "$file" --clobber
           done
-          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets --jq '{draft: .isDraft, prerelease: .isPrerelease, assets: (.assets | length)}'
   mac-smoke:
     name: macOS one-click setup and native helper checks
