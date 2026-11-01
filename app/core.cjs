@@ -24,7 +24,13 @@ async function ensurePermission(name,context={}){
  if(context.isActive&&!context.isActive())throw Error('Client access has been revoked');
  if(context.interactive===true)return;
  const id=context.clientId||process.env.REDXDEX_CLIENT_ID||'local';
- const mode=s.clientPolicies[id]?.[name]||(s.permissions[name]?'always':'deny');
+ // A paired client must never inherit a machine-wide capability merely because
+ // its individual policy is missing (for example after a migration or crash).
+ // Keep the legacy local stdio fallback; authenticated remote/local AI clients
+ // require their own explicit policy or a fresh, owner-visible approval.
+ const individual=s.clientPolicies[id]?.[name];
+ const localLegacy=id==='local'&&context.transport!=='http';
+ const mode=individual??(localLegacy?(s.permissions[name]?'always':'deny'):(s.permissions[name]?'ask':'deny'));
  if(mode==='deny')throw Error('Permission disabled: '+name);
  if(mode==='ask'){
   if(!context.authorize)throw Error('Approval required: open the desktop app to answer this request');

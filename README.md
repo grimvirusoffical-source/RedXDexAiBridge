@@ -1,5 +1,13 @@
 # Red-XAI Bridge
 
+## One computer, one private MCP endpoint (Windows, macOS and Linux)
+
+**Do not publish the MCP URL of one person's desktop as a universal plugin endpoint.** Each person installs Red-XAI Bridge on their own computer, starts its local loopback MCP gateway, and pairs only the clients they approve. A remote ChatGPT connection uses that computer's own HTTPS MCP URL and OAuth pairing approval; the URL is not shared between unrelated users. The desktop app stores client credentials, per-client permissions and device identity locally, with no automatic cross-device control.
+
+A single public plugin listing can provide cross-platform setup instructions, but it cannot safely direct every user to one desktop machine. A true single-URL multi-user hosted service would need separate user authentication, device enrollment, owner-bound routing and an auditable authorization boundary before proxying any computer tools. **This repository does not currently deploy such a hosted multi-tenant gateway.** Use per-installation private MCP connections instead.
+
+To connect: install the package for your OS, open the Bridge and enable the HTTPS tunnel only when you want remote access. Copy **this computer's current** URL into your own private MCP connector, authorize the OAuth request on the Bridge computer, and grant each client only its necessary capabilities. Temporary Cloudflare URLs rotate after reboot/reconnect; configure your own stable VPS relay and hostname when persistent connectivity is required. Do not copy someone else's endpoint or credentials into your plugin.
+
 ## Windows desktop shortcut and taskbar choices (0.10.10)
 
 A fresh interactive Windows installer asks whether to create a desktop shortcut. The application installs either way and keeps a Start menu entry. A separate optional choice offers help pinning the running application to the Windows taskbar on first launch. Windows requires the owner to confirm the pin manually; setup never silently pins an application. In-place and silent updates do not change existing shortcut preferences.
@@ -22,8 +30,8 @@ The [Releases page](https://github.com/grimvirusoffical-source/RedXDexAiBridge/r
 
 | Platform | Package | Status |
 | --- | --- | --- |
-| Windows x64 | One-click, per-user `.exe` installer | Version 0.10.8 published; executable is currently unsigned |
-| Linux x64 | AppImage and Debian `.deb` | Version 0.10.8 published |
+| Windows x64 | One-click, per-user `.exe` installer | Version 0.10.11 published; executable is currently unsigned |
+| Linux x64 | AppImage and Debian `.deb` | Version 0.10.11 published |
 | macOS Apple Silicon | Earlier Developer ID–signed DMG | Version 0.10.8 source checks passed; no new signed or notarized Mac installer was published |
 
 Windows may show a SmartScreen warning until a verified code-signing certificate is configured. Never treat a successful build as proof of signing or notarization.
