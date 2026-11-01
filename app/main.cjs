@@ -19,6 +19,17 @@ if(process.argv.includes('--vortex-diagnostic')){
  app.on('second-instance',()=>show());
  function emit(channel,value){if(win&&!win.isDestroyed())win.webContents.send(channel,value);}
  function show(){if(win&&!win.isDestroyed()){win.show();win.focus();}}
+ function setRemoteAutoConnect(enabled){
+   const existing=core.settings();
+   if(existing.remoteAutoConnect===enabled)return existing;
+   const updated=core.saveSettings({...existing,remoteAutoConnect:enabled});
+   if(app.isPackaged&&updated.launchAtLogin){
+     try{require('./startup.cjs').configureStartup(app,true,{remoteAutoConnect:enabled});}
+     catch(error){core.saveSettings(existing);throw error;}
+   }
+   emit('settings',updated);
+   return updated;
+ }
  function audit(record){activity.unshift(record);activity.length=Math.min(activity.length,300);emit('activity',activity.slice(0,100));}
  function vortexConfig(){
   const file=path.join(app.getPath('userData'),'vortex-connection.json');
@@ -80,14 +91,14 @@ if(process.argv.includes('--vortex-diagnostic')){
    quitting=true;app.quit();return;
   }
   if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
-  if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true)tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
-  if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true);}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
+  if(!core.settings().emergencyStop&&(process.argv.includes('--connect-remote')||core.settings().remoteAutoConnect===true||tunnel.config()?.autoConnect===true))tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
+  if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true,{remoteAutoConnect:core.settings().remoteAutoConnect});}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();
  }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);quitting=true;app.exit(1);return;}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
- ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin);}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
+ ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if((old.launchAtLogin!==result.launchAtLogin||old.remoteAutoConnect!==result.remoteAutoConnect)&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:result.remoteAutoConnect});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
  ipc('stop:all',()=>stopEverything());
  ipc('folder:pick',async()=>{const r=await dialog.showOpenDialog(win,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
  ipc('approval:answer',(id,choice)=>approvals.resolve(id,choice));
@@ -113,9 +124,10 @@ if(process.argv.includes('--vortex-diagnostic')){
       return {kind,clientId:c.id,name:c.name,oneTimeInstructions:quickSetup.instructionsFor(kind,{clientName:c.name,url:local.url,token:c.token}),message:'New AI credential created. Copy it now: it cannot be recovered later. Permissions default to Ask. The remote tunnel was NOT enabled.'};
     }
     if(kind==='remote'){
-      const status=await tunnel.start(local.url);
-      if(!status?.url)throw Error('Remote tunnel did not return an authenticated HTTPS endpoint.');
-      return {kind,remoteUrl:status.url,oneTimeInstructions:quickSetup.instructionsFor(kind),message:'Remote link prepared. Copy the HTTPS URL to the remote AI using OAuth, then approve the pairing request in this app. A temporary tunnel may change on restart.'};
+      await tunnel.start(local.url);
+      const status=await quickSetup.waitForVerifiedRemote(tunnel);
+      setRemoteAutoConnect(true);
+      return {kind,remoteUrl:status.url,oneTimeInstructions:quickSetup.instructionsFor(kind),message:'Verified HTTPS MCP connection is online. Copy the URL to your remote AI and complete OAuth pairing and local approval. Temporary tunnel addresses may change after reconnect.'};
     }
     const spec=clientSpec(kind);
     const result=setup.addClient(kind,{spec});
@@ -133,8 +145,8 @@ if(process.argv.includes('--vortex-diagnostic')){
 
  ipc('setup:diagnostics',async()=>{await startGateway();const spec=clientSpec('Diagnostics');const proc=cp.spawn(spec.command,spec.args,{env:{...process.env,...spec.env},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{proc.kill();reject(Error('MCP diagnostic timed out'));},5000);proc.stdout.on('data',b=>stdout+=b);proc.stderr.on('data',b=>stderr+=b);proc.on('error',e=>{clearTimeout(timer);reject(e);});proc.on('close',()=>{clearTimeout(timer);try{const r=JSON.parse(stdout.trim().split('\n')[0]);if(!r.result?.serverInfo)throw Error(r.error?.message||stderr||'MCP handshake failed');resolve({ok:true,version:r.result.serverInfo.version});}catch(e){reject(e);}});proc.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Diagnostics',version:'1'}}})+'\n');});});
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
- ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
- ipc('remote:start',async()=>{await startGateway();return tunnel.start(gateway.url);});ipc('remote:stop',()=>tunnel.stop());
+ ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();setRemoteAutoConnect(false);tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
+ ipc('remote:start',async()=>{await startGateway();const status=await tunnel.start(gateway.url);setRemoteAutoConnect(true);return status;});ipc('remote:stop',()=>{setRemoteAutoConnect(false);return tunnel.stop();});
  ipc('native:status',async()=>{const helper=await native.control({action:'status'}).catch(e=>({error:e.message}));const status=process.platform==='darwin'?require('electron').systemPreferences.getMediaAccessStatus('screen'):'unknown';return native.permissionStatus(helper,status);});
  ipc('native:settings',section=>{
   if(!['accessibility','screen'].includes(section))throw Error('Unknown settings section');
