@@ -61,6 +61,20 @@ Enter a supported Vortex API endpoint and credentials through the application's 
 
 Network failures, authentication failures, and unavailable models are surfaced explicitly. A requested model or endpoint is not silently replaced with another one.
 
+## Updates and optional developer tools
+
+Packaged Bridge updates use **public GitHub releases directly**. Checking, downloading, and installing a stable update does not require GitHub CLI, Git, Node.js, or a personal access token. The desktop app provides **Check for updates**, **Download**, and **Restart & install**. Prereleases are excluded by default.
+
+On a new **Windows** installation, the installer offers Node.js LTS, Git, and GitHub CLI separately. Each is optional and skipped for silent installations and application updates. The installer uses Windows Package Manager (winget) for approved installations, if available. An unsuccessful optional install does not prevent Bridge installation.
+
+On **macOS and Linux**, the app reports which optional tools are present. Use the native package manager to install missing tools; DMG, AppImage and Debian packages do not silently install extra development tools.
+
+- Node.js: scripts and building the source. The installed Bridge includes its own runtime and does not need a separate Node.js installation.
+- Git: cloning, commits, branches, and other local repository commands.
+- GitHub CLI: optional repository management and sign-in using the **Connect GitHub CLI** button. The button opens an interactive authorization flow; complete it in a browser/terminal. It is not required for application updates.
+
+A version 0.10.8 installation used the older private-feed updater and may require **one manual 0.10.9 upgrade** from Releases. Subsequent stable releases use the public feed.
+
 ## Building and testing
 
 Use Node.js 24 with the repository's pinned dependencies:
