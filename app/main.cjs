@@ -186,6 +186,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('updates:github',async()=>require('./github-cli.cjs').beginLogin({open:url=>shell.openExternal(url)}));
  ipc('github:status',async()=>require('./github-cli.cjs').status());
  ipc('tools:status',()=>require('./optional-tools.cjs').status());
+ ipc('optional:install',async tool=>{const {IDS}=require('./optional-tools.cjs');if(!Object.hasOwn(IDS,tool))throw Error('Unknown optional tool');const choice=await dialog.showMessageBox(win,{type:'question',buttons:['Cancel','Install selected tool'],defaultId:0,cancelId:0,title:'Optional developer tool',message:'Install '+IDS[tool].label+'?',detail:IDS[tool].reason+'\nThe package manager may request operating-system authentication.'});if(choice.response!==1)return {cancelled:true,message:'Installation cancelled'};return require('./optional-install.cjs').begin(tool);});
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
  ipc('vortex:status',()=>vortexStatus());
  ipc('vortex:connection',()=>({...vortexConfig(),keySaved:fs.existsSync(secretFile('vortex-key'))}));
