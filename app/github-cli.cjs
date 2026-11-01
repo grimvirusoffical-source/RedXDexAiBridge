@@ -2,6 +2,7 @@
 const cp=require('node:child_process'),path=require('node:path');
 const {promisify}=require('node:util');
 const {installed}=require('./optional-tools.cjs');
+const {findExecutable}=require('./platform.cjs');
 const execFile=promisify(cp.execFile);
 async function status({platform=process.platform,find=installed,run=execFile}={}){
  const bin=find('gh',{platform});
@@ -14,7 +15,7 @@ async function status({platform=process.platform,find=installed,run=execFile}={}
  }
 }
 function commandForLogin(bin){
- if(typeof bin!=='string'||!path.isAbsolute(bin)||/[\r\n\0]/.test(bin))throw Error('Invalid GitHub CLI executable path');
+ if(typeof bin!=='string'||!(path.isAbsolute(bin)||path.win32.isAbsolute(bin))||/[\r\n\0]/.test(bin))throw Error('Invalid GitHub CLI executable path');
  return "& '"+bin.replace(/'/g,"''")+"' auth login --hostname github.com --git-protocol https --web";
 }
 async function beginLogin({platform=process.platform,find=installed,spawn=cp.spawn,run=execFile}={}){
@@ -30,14 +31,14 @@ async function beginLogin({platform=process.platform,find=installed,spawn=cp.spa
   return {installed:true,authenticated:false,started:true,message:'GitHub CLI sign-in opened in a terminal. Finish the browser/device authorization, then click Check GitHub CLI.'};
  }
  if(platform==='darwin'){
-  const command=commandForLogin(bin).replace(/^& /,'') .replace(/''/g,"'") ;
+  const command="'"+bin.replace(/'/g,"'\\''")+"' auth login --hostname github.com --git-protocol https --web";
   const script='tell application "Terminal" to do script '+JSON.stringify(command);
   await run('/usr/bin/osascript',['-e',script],{timeout:15000,maxBuffer:8192});
   return {installed:true,authenticated:false,started:true,message:'GitHub CLI sign-in opened in Terminal. Complete browser authorization.'};
  }
  if(platform==='linux'){
   const quote=value=>"'"+value.replace(/'/g,"'\\''")+"'";
-  const term=['x-terminal-emulator','gnome-terminal','konsole','xterm'].map(x=>find(x,{platform})).find(Boolean);
+  const term=['x-terminal-emulator','gnome-terminal','konsole','xterm'].map(x=>findExecutable(x,platform)).find(Boolean);
   if(!term)return {...initial,started:false,message:'Open a terminal and run: gh auth login --hostname github.com --web'};
   const script=quote(bin)+' auth login --hostname github.com --web; exec sh';
   const args=path.basename(term).startsWith('gnome-terminal')?['--','sh','-c',script]:['-e','sh','-c',script];
