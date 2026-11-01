@@ -75,6 +75,22 @@ if(process.argv.includes('--vortex-diagnostic')){
    if(result.navigation.some(x=>!x.visible))throw Error('A navigation page did not open');
     result.quickSetup=await win.webContents.executeJavaScript("(async()=>{const check=await window.bridge.quickSetup();const ai=await window.bridge.addAi('generic','One Click CI Fixture');return {gatewayRunning:check.gatewayRunning,permissionDefault:check.permissionDefault,kind:ai.kind,generatedCredential:typeof ai.oneTimeInstructions==='string'&&ai.oneTimeInstructions.includes('Bearer '),clientAdded:!!ai.clientId,buttonFound:!!document.getElementById('quick-computer-setup'),selectorFound:!!document.getElementById('quick-ai-kind')};})()");
     if(!result.quickSetup.gatewayRunning||!result.quickSetup.generatedCredential||!result.quickSetup.clientAdded||!result.quickSetup.buttonFound||!result.quickSetup.selectorFound||result.quickSetup.permissionDefault!=='ask')throw Error('One-click setup smoke test failed');
+   // Verify actual terminal work continues after the user closes the window to tray.
+   const nodeBin=require('./platform.cjs').findExecutable('node');
+   if(!nodeBin)throw Error('Smoke requires Node.js for background job verification');
+   if(!core.settings().keepRunning)core.saveSettings({...core.settings(),keepRunning:true});
+   win.close();if(win.isDestroyed()||win.isVisible())throw Error('Closing to tray must keep the gateway running without showing the window');
+   const bg=core.processes.start({command:nodeBin,args:['-e',"setTimeout(()=>process.stdout.write('BACKGROUND_READY'),250)"],cwd:os.tmpdir(),clientId:'smoke-background',timeoutMs:6000});
+   let bgState;
+   for(let attempt=0;attempt<45;attempt++){
+    await new Promise(resolve=>setTimeout(resolve,100));
+    bgState=core.processes.read(bg.id,'smoke-background');
+    if(!bgState.running)break;
+   }
+   result.backgroundWhileHidden=!!bgState&&!bgState.running&&bgState.exitCode===0&&bgState.output.includes('BACKGROUND_READY')&&!!gateway?.url;
+   result.crawlerTools=core.definitions.filter(tool=>tool.name.startsWith('crawl_')).length;
+   if(!result.backgroundWhileHidden||result.crawlerTools!==5)throw Error('Hidden background execution or crawler tools failed');
+   win.show();
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
