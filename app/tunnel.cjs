@@ -50,11 +50,13 @@ class Tunnel {
     this.root = options.root || process.env.REDXDEX_DATA_DIR || path.join(os.homedir(), '.redxdex-ai-bridge');
     this.spawn = options.spawn || cp.spawn;
     this.request = options.fetch || globalThis.fetch;
+    this.temporaryBinary = options.temporaryBinary || null;
     this.child = null;
     this.desired = false;
     this.generation = 0;
     this.retries = 0;
     this.probing = false;
+    this.probeFailures = 0;
     this.state = {phase: 'off', url: null, mode: null, lastCheckedAt: null, message: 'Remote access is off'};
   }
   config() {
@@ -68,6 +70,7 @@ class Tunnel {
     const upstream = new URL(localURL);
     if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' || !upstream.port || upstream.username || upstream.password) throw Error('Tunnel upstream must be loopback');
     this.configValue = this.config();
+    this.probeFailures = 0;
     if (this.configValue) {
       for (const file of [this.configValue.identityFile, this.configValue.knownHostsFile]) {
         if (!fs.statSync(file).isFile()) throw Error('Relay key configuration is missing');
@@ -89,7 +92,7 @@ class Tunnel {
     } else {
       const bundled=process.resourcesPath&&path.join(process.resourcesPath,'tunnel',process.platform==='win32'?'cloudflared.exe':'cloudflared');
       const built=path.join(__dirname,'..','build','tunnel',process.platform==='win32'?'cloudflared.exe':'cloudflared');
-      binary=[bundled,built].find(p=>p&&fs.existsSync(p))||findExecutable('cloudflared');
+      binary=[this.temporaryBinary,bundled,built].find(p=>p&&fs.existsSync(p))||findExecutable('cloudflared');
       if (!binary) { this.desired = false; this.set({phase: 'error', url: null, message: 'Configure a VPS relay or install the official cloudflared client.'}); return; }
       args = ['tunnel', '--url', new URL(this.localURL).origin, '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4'];
       this.set({phase: 'connecting', mode: 'temporary', url: null, message: 'Starting temporary HTTPS tunnel…'});
@@ -101,6 +104,14 @@ class Tunnel {
       if (this.child !== child || generation !== this.generation) return;
       this.child = null; clearInterval(this.healthTimer);
       if (!this.desired) return;
+      if (this.configValue) {
+        this.configValue = null;
+        this.probeFailures = 0;
+        clearTimeout(this.retryTimer); clearTimeout(this.initialTimer);
+        this.set({phase: 'connecting', mode: 'temporary', url: null, message: 'VPS relay disconnected; switching to temporary HTTPS tunnel…'});
+        this.launch(generation);
+        return;
+      }
       const delay = Math.min(30000, 2000 * 2 ** Math.min(this.retries++, 4));
       this.set({phase: 'retrying', message: 'Relay disconnected. Retrying in ' + (delay / 1000) + 's. ' + String(reason || '').slice(-180)});
       this.retryTimer = setTimeout(() => this.launch(generation), delay); this.retryTimer.unref?.();
@@ -126,11 +137,25 @@ class Tunnel {
       await probeEndpoint(url, this.request);
       if (!this.desired || generation !== this.generation || !this.child || this.state.url !== url) return;
       this.retries = 0;
+      this.probeFailures = 0;
       this.set({phase: 'online', lastCheckedAt: Date.now(), message: this.configValue
         ? 'Public endpoint verified. Your VPS relay keeps this address across app restarts. OAuth approval is required for new AIs.'
         : 'Public endpoint verified. Temporary address changes when this tunnel restarts; update remote clients afterward.'});
     } catch (error) {
-      if (this.desired && generation === this.generation && this.child) this.set({phase: 'unreachable', lastCheckedAt: Date.now(), message: 'Remote endpoint is not reachable: ' + error.message + '. Local MCP remains available; checking again automatically.'});
+      if (this.desired && generation === this.generation && this.child) {
+        if (this.configValue && ++this.probeFailures >= 2) {
+          const child = this.child;
+          this.child = null;
+          clearInterval(this.healthTimer); clearTimeout(this.initialTimer);
+          this.configValue = null;
+          this.probeFailures = 0;
+          child?.kill('SIGTERM');
+          this.set({phase: 'connecting', mode: 'temporary', url: null, lastCheckedAt: Date.now(), message: 'VPS relay is unreachable; switching to temporary HTTPS tunnel…'});
+          this.launch(generation);
+          return;
+        }
+        this.set({phase: 'unreachable', lastCheckedAt: Date.now(), message: 'Remote endpoint is not reachable: ' + error.message + '. Local MCP remains available; checking again automatically.'});
+      }
     } finally { this.probing = false; }
   }
   stop() {
