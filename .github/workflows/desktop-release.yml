@@ -8,6 +8,9 @@ on:
         default: ''
   pull_request:
     branches: [main]
+  push:
+    tags:
+      - 'v*'
 permissions:
   contents: read
 jobs:
@@ -80,8 +83,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
-    needs: build
+    if: (github.event_name == 'workflow_dispatch' && inputs.tag != '') || startsWith(github.ref, 'refs/tags/v')
+    needs: [build, mac-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -90,19 +93,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Upload verified installers to the existing draft
+      - name: Publish verified Windows and Linux installers
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          EXPECTED_TAG="v$(node -p "require('./package.json').version")"
+          if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then echo "Release tag does not match package version" >&2; exit 1; fi
+          test -f RELEASE-0.10.8.md
+          if ! gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --prerelease --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux candidate" --notes-file RELEASE-0.10.8.md --target "$GITHUB_SHA"
+          fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          test "$(find artifacts -type f -name '*.exe' | wc -l)" -ge 1
+          test "$(find artifacts -type f -name '*.AppImage' | wc -l)" -ge 1
+          test "$(find artifacts -type f -name '*.deb' | wc -l)" -ge 1
           find artifacts -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' -o -name '*.blockmap' -o -name 'SHA256SUMS-*' \) -print0 | while IFS= read -r -d '' file; do
-            gh release upload "$RELEASE_TAG" "$file"
+            gh release upload "$RELEASE_TAG" "$file" --clobber
           done
-
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets --jq '{draft: .isDraft, prerelease: .isPrerelease, assets: (.assets | length)}'
   mac-smoke:
     name: macOS one-click setup and native helper checks
     runs-on: macos-15
