@@ -32,10 +32,14 @@ async function begin(tool,{platform=process.platform,lookup=findExecutable,spawn
  if(!p.available)return {...p,started:false};
  let child;
  if(platform==='win32'){
-  const ps=path.win32.join(env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  const script="& '"+p.executable.replace(/'/g,"''")+"' "+p.args.join(' ')+"; Write-Host 'Press Enter to close this window'; Read-Host";
-  const encoded=Buffer.from(script,'utf16le').toString('base64');
-  child=spawn(ps,['-NoProfile','-NoExit','-EncodedCommand',encoded],{detached:true,windowsHide:false,stdio:'ignore'});
+  // Winget runs without a detached console, so the caller observes actual
+  // completion and any package-manager errors. A UAC prompt can still appear.
+  try{
+   await run(p.executable,p.args,{timeout:300000,maxBuffer:65536,windowsHide:true});
+   return {...p,started:true,completed:true,message:IDS[tool].label+' installation completed. Recheck installed tools; a new terminal may be needed for PATH changes.'};
+  }catch(error){
+   return {...p,started:false,completed:false,message:IDS[tool].label+' could not be installed automatically ('+(error.code||'installer error')+'). The Bridge itself remains available.'};
+  }
  }else if(platform==='darwin'){
   const command=quoteShell(p.executable)+' '+p.args.map(quoteShell).join(' ');
   const applescript='tell application "Terminal" to do script '+JSON.stringify(command);
