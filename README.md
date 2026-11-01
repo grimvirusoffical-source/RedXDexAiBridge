@@ -1,5 +1,14 @@
 # Red-XAI Bridge
 
+## Version 0.10.9: background jobs and crawling
+
+**Background execution:** A running Bridge can finish approved terminal jobs when its window is hidden. Use `process_start` to launch a process and `process_list` / `process_output` / `process_stop` to monitor it. Background-only mode blocks direct mouse, keyboard, and application-focus tools, but permits approved non-focus work. Explicit process timeouts can extend to 24 hours.
+
+**Public website crawling:** The Files & terminal page provides a crawler with progress and stop controls. MCP clients use `crawl_start`, `crawl_status`, `crawl_results`, `crawl_list`, and `crawl_stop`. A separate crawl permission defaults to **Deny**. Jobs remain owned by the pairing that started them. Each crawl is bounded to one public site, up to 20 pages and depth three, honors robots.txt and supported crawl-delay directives, and rejects private-network addresses and cross-site redirects.
+
+**Background limitations:** Jobs continue while the app is running, including when hidden. Fully quitting the application, logging out, shutting down, or suspending the computer can interrupt them. Work does not automatically resume after a reboot, and the Bridge does not independently invent new tasks. See [0.10.9 release notes](RELEASE-0.10.9.md).
+
+
 A permission-controlled desktop gateway for [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) clients. Connect local and remote development tools to Windows, macOS, or Linux while retaining control over permitted operations, approved folders, and individual client access.
 
 ## Downloads
