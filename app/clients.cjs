@@ -1,10 +1,11 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const {atomicRename}=require('./atomic-rename.cjs');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 function atomicJSON(file, value) {
   fs.mkdirSync(path.dirname(file), {recursive:true, mode:0o700});
   const tmp = file + '.' + crypto.randomUUID();
-  try { fs.writeFileSync(tmp, JSON.stringify(value,null,2), {mode:0o600, flag:'wx'}); fs.renameSync(tmp,file); fs.chmodSync(file,0o600); }
+  try { fs.writeFileSync(tmp, JSON.stringify(value,null,2), {mode:0o600, flag:'wx'}); atomicRename(tmp,file); fs.chmodSync(file,0o600); }
   finally { try { fs.unlinkSync(tmp); } catch {} }
 }
 class ClientStore {

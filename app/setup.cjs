@@ -3,6 +3,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const os=require('node:os');
 const cp=require('node:child_process');
+const {atomicRename}=require('./atomic-rename.cjs');
 
 function nodeCommand(){
   const fromPath=process.env.REDXDEX_NODE_PATH;
@@ -63,7 +64,7 @@ function addClient(client,{destination=configPath(client),spec=serverSpec()}={})
  if(backup)fs.copyFileSync(destination,backup,fs.constants.COPYFILE_EXCL);
  doc[section]={...(doc[section]||{}),RedXDexAiBridge:client==='vscode'?{type:'stdio',...spec}:spec};
  const temp=destination+'.tmp-'+process.pid;
- try{fs.writeFileSync(temp,JSON.stringify(doc,null,2)+'\n',{flag:'wx',mode:0o600});fs.renameSync(temp,destination);}catch(e){try{fs.unlinkSync(temp)}catch{}throw e;}
+ try{fs.writeFileSync(temp,JSON.stringify(doc,null,2)+'\n',{flag:'wx',mode:0o600});atomicRename(temp,destination);}catch(e){try{fs.unlinkSync(temp)}catch{}throw e;}
  return {client,path:destination,backup,message:'Installed '+client+' MCP configuration. Restart the AI client to load it.'};
 }
 function selfCheck(){const spec=serverSpec();const r=cp.spawnSync(spec.command,[...spec.args],{input:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'redxdex-self-test',version:'1'}}})+'\n',encoding:'utf8',timeout:4000,maxBuffer:200000});if(r.error)throw r.error;const line=r.stdout.split(/\r?\n/).find(Boolean);const parsed=JSON.parse(line);if(parsed.id!==1||!parsed.result?.serverInfo)throw Error('MCP server failed initialization');return {ok:true,version:parsed.result.serverInfo.version,entry:spec.args[0],node:spec.command};}

@@ -1,6 +1,7 @@
 'use strict';
 const path=require('node:path'),fs=require('node:fs'),os=require('node:os'),crypto=require('node:crypto'),cp=require('node:child_process');
 const {pathToFileURL}=require('node:url');
+const {atomicRename}=require('./atomic-rename.cjs');
 const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImage,shell,clipboard}=require('electron');
 if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!process.env.REDXDEX_SMOKE_OUTPUT))throw Error('Self-test requires isolated data and output folders');
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
@@ -34,7 +35,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  function secretFile(name){return path.join(app.getPath('userData'),name+'.enc');}
  function secure(){if(!safeStorage.isEncryptionAvailable()||safeStorage.getSelectedStorageBackend?.()==='basic_text')throw Error('Secure OS credential storage is unavailable');}
  function readSecret(name){secure();const p=secretFile(name);return fs.existsSync(p)?safeStorage.decryptString(fs.readFileSync(p)):'';}
- function saveSecret(name,value){secure();fs.mkdirSync(app.getPath('userData'),{recursive:true,mode:0o700});const f=secretFile(name),tmp=f+'.'+crypto.randomUUID();try{fs.writeFileSync(tmp,safeStorage.encryptString(value),{mode:0o600,flag:'wx'});fs.renameSync(tmp,f);}finally{try{fs.unlinkSync(tmp);}catch{}}}
+ function saveSecret(name,value){secure();fs.mkdirSync(app.getPath('userData'),{recursive:true,mode:0o700});const f=secretFile(name),tmp=f+'.'+crypto.randomUUID();try{fs.writeFileSync(tmp,safeStorage.encryptString(value),{mode:0o600,flag:'wx'});atomicRename(tmp,f);}finally{try{fs.unlinkSync(tmp);}catch{}}}
  function ipc(name,fn){ipcMain.handle(name,(e,...args)=>{if(!win||e.sender!==win.webContents||e.senderFrame!==win.webContents.mainFrame||e.senderFrame.url!==UI)throw Error('Untrusted IPC sender');return fn(...args);});}
  function defaultClient(id){const s=core.settings();s.clientPolicies[id]=Object.fromEntries(Object.keys(s.permissions).map(k=>[k,'ask']));core.saveSettings(s);emit('clients',clients.list());}
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}

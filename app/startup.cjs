@@ -1,5 +1,6 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {atomicRename}=require('./atomic-rename.cjs');
 const MARKER='X-RedXAI-Managed=true';
 function configureStartup(app,enabled,{platform=process.platform,env=process.env,configDirectory,homeDirectory=os.homedir(),remoteAutoConnect=false}={}){
  if(typeof enabled!=='boolean')throw Error('Startup preference must be a boolean');
@@ -25,7 +26,7 @@ function configureStartup(app,enabled,{platform=process.platform,env=process.env
  const quoted='"'+executable.replace(/[%]/g,'%%').replace(/[\\"`$]/g,'\\$&')+'"';
  const text='[Desktop Entry]\nType=Application\nVersion=1.0\nName=Red-XAI Bridge\nComment=Permission-controlled AI desktop bridge\nExec='+quoted+'\nIcon=redxdex-ai-bridge\nTerminal=false\nX-GNOME-Autostart-enabled=true\n'+MARKER+'\n';
  fs.mkdirSync(dir,{recursive:true,mode:0o700});const temp=file+'.'+crypto.randomUUID();
- try{fs.writeFileSync(temp,text,{flag:'wx',mode:0o600});fs.renameSync(temp,file);}finally{try{fs.unlinkSync(temp)}catch{}}
+ try{fs.writeFileSync(temp,text,{flag:'wx',mode:0o600});atomicRename(temp,file);}finally{try{fs.unlinkSync(temp)}catch{}}
  return {enabled:true,platform};
 }
 module.exports={configureStartup};
