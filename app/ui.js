@@ -84,4 +84,20 @@ $('save-limits').onclick=()=>attempt(async()=>{const next={...state.settings};fo
 
 $('vortex-bridge-export').onclick=()=>attempt(async()=>{const r=await api.exportVortexMCP();if(!r.cancelled){await refresh();toast(r.message);}});
 
+
+async function refreshTaskbarPinOffer(){
+ const offer=await api.taskbarPinStatus();
+ $('taskbar-pin-nudge').hidden=!(offer.available&&offer.pending);
+}
+$('taskbar-pin-help').onclick=()=>attempt(async()=>{
+ const result=await api.taskbarPinGuide();
+ toast(result.message||'Windows taskbar help opened.');
+ await refreshTaskbarPinOffer();
+});
+$('taskbar-pin-dismiss').onclick=()=>attempt(async()=>{
+ await api.taskbarPinDismiss();
+ await refreshTaskbarPinOffer();
+});
+attempt(refreshTaskbarPinOffer);
+
 api.on('startup:warning',message=>toast(message,true));
