@@ -108,9 +108,9 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           EXPECTED_TAG="v$(node -p "require('./package.json').version")"
           if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then echo "Release tag does not match package version" >&2; exit 1; fi
-          test -f RELEASE-0.10.8.md
+          test -f "RELEASE-${RELEASE_TAG#v}.md"
           if ! gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --draft --prerelease --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux candidate" --notes-file RELEASE-0.10.8.md --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" --draft --title "RedXDexAiBridge ${RELEASE_TAG#v} — Windows/Linux" --notes-file "RELEASE-${RELEASE_TAG#v}.md" --target "$GITHUB_SHA"
           fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           test "$(find artifacts -type f -name '*.exe' | wc -l)" -ge 1
@@ -119,7 +119,7 @@ jobs:
           find artifacts -type f \( -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' -o -name 'latest*.yml' -o -name '*.blockmap' -o -name 'SHA256SUMS-*' \) -print0 | while IFS= read -r -d '' file; do
             gh release upload "$RELEASE_TAG" "$file" --clobber
           done
-          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          gh release edit "$RELEASE_TAG" --draft=false
           gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets --jq '{draft: .isDraft, prerelease: .isPrerelease, assets: (.assets | length)}'
   mac-smoke:
     name: macOS one-click setup and native helper checks
@@ -137,3 +137,13 @@ jobs:
         run: npm run prepare:native
       - name: Verify compiled helper exists
         run: test -x build/redxdex-control
+      - name: macOS window-hidden background process smoke
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-mac-background-data"
+          export REDXDEX_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-mac-background-smoke"
+          ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
+          node -e 'const fs=require("fs"),p=process.env.REDXDEX_SMOKE_OUTPUT+"/result.json",r=JSON.parse(fs.readFileSync(p,"utf8"));if(!r.backgroundWhileHidden||r.crawlerTools!==5||r.rendererErrors?.length)process.exit(1);console.log("macOS background smoke passed",r.navigation.length,"pages");'
+

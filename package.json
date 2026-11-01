@@ -1,6 +1,6 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "private": true,
   "description": "Red-XAI Bridge — permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
@@ -60,7 +60,7 @@
         "owner": "grimvirusoffical-source",
         "repo": "RedXDexAiBridge",
         "releaseType": "release",
-        "private": true
+        "private": false
       }
     ],
     "extraResources": [
@@ -102,7 +102,8 @@
       "deleteAppDataOnUninstall": false,
       "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}",
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "include": "build/installer.nsh"
     },
     "linux": {
       "icon": "build/icons",

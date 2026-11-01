@@ -5,7 +5,7 @@ function toast(text,error=false){$('toast').textContent=text;$('toast').hidden=f
 async function attempt(fn){try{return await fn();}catch(e){toast(e.message,true);return null;}}
 function page(id){document.querySelectorAll('.page').forEach(p=>p.hidden=p.id!=='page-'+id);document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===id));$('page-label').textContent=document.querySelector('[data-page="'+id+'"]')?.textContent.replace(/\d+$/,'').trim()||id;}
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>page(b.dataset.page));
-const capabilities={list:['Browse folders','List names and file metadata within approved roots.'],read:['Read files','Read file contents inside approved folders.'],write:['Manage files','Create, edit, move and trash files.'],terminal:['Terminal & processes','Not sandboxed: commands can access anything your OS account can.'],screenshot:['View screen','Capture the current desktop. Screens may contain private information.'],mouse:['Control mouse','Move, click, drag and scroll.'],keyboard:['Control keyboard','Type text and press keyboard shortcuts.'],apps:['Launch apps','Open named applications.']};
+const capabilities={list:['Browse folders','List names and file metadata within approved roots.'],read:['Read files','Read file contents inside approved folders.'],write:['Manage files','Create, edit, move and trash files.'],terminal:['Terminal & processes','Not sandboxed: commands can access anything your OS account can.'],crawl:['Website crawling','Background crawling of public pages, bounded by robots.txt and network restrictions.'],screenshot:['View screen','Capture the current desktop. Screens may contain private information.'],mouse:['Control mouse','Move, click, drag and scroll.'],keyboard:['Control keyboard','Type text and press keyboard shortcuts.'],apps:['Launch apps','Open named applications.']};
 async function save(){state.settings=await api.save(state.settings);renderSettings();}
 function renderSettings(){
  const s=state.settings;$('stop-banner').hidden=!s.emergencyStop;$('global-status').textContent=s.emergencyStop?'COMPUTER TOOLS STOPPED':'PERMISSIONS ACTIVE';$('keep-running').checked=!!s.keepRunning;$('launch-login').checked=!!s.launchAtLogin;$('start-hidden').checked=!!s.startHidden;$('background-only').checked=!!s.backgroundOnly;for(const [id,key]of [['max-processes','maxProcesses'],['max-processes-client','maxProcessesPerClient'],['max-requests','maxConcurrentRequests'],['max-requests-client','maxRequestsPerClient']])$(id).value=s[key];$('client-execution').value=s.clientExecution?.[selectedClient]||'desktop';$('client-execution').disabled=!selectedClient;
@@ -32,11 +32,47 @@ $('manual-create').onclick=()=>attempt(async()=>{const c=await api.createClient(
 $('local-start').onclick=()=>attempt(async()=>renderGateway(await api.gatewayStart()));$('local-stop').onclick=()=>attempt(async()=>{renderGateway(await api.gatewayStop());renderRemote({phase:'off',message:'Gateway stopped'});} );
 async function nativeStatus(){const r=await api.nativeStatus();$('native-status').textContent=r.error||'Input controls: '+(r.accessibility?'Available':'Not granted / unavailable')+'\nScreen capture: '+(r.screenRecording===true?'Allowed':(r.screenRecordingStatus||'Test required'))+'\n'+(r.message||'')+'\n'+(r.screenRecordingMessage||'');}
 $('native-check').onclick=()=>attempt(nativeStatus);document.querySelectorAll('[data-os-setting]').forEach(b=>b.onclick=()=>attempt(()=>api.nativeSettings(b.dataset.osSetting)));$('screen-capture').onclick=()=>attempt(async()=>{const r=await api.tool('desktop_screenshot',{});$('screen-preview').src='data:image/png;base64,'+r.image;$('screen-preview').hidden=false;});
-$('keep-running').onchange=e=>attempt(async()=>{state.settings.keepRunning=e.target.checked;await save();});$('launch-login').onchange=e=>attempt(async()=>{state.settings.launchAtLogin=e.target.checked;await save();});$('check-updates').onclick=()=>attempt(async()=>renderUpdates(await api.updates()));$('download-update').onclick=()=>attempt(async()=>renderUpdates(await api.updateDownload()));$('install-update').onclick=()=>attempt(()=>api.updateInstall());$('auto-update').onchange=e=>attempt(async()=>renderUpdates(await api.updateAuto(e.target.checked)));$('github-login').onclick=()=>attempt(async()=>{const r=await api.updateGitHub();toast(r.message);});
+$('keep-running').onchange=e=>attempt(async()=>{state.settings.keepRunning=e.target.checked;await save();});$('launch-login').onchange=e=>attempt(async()=>{state.settings.launchAtLogin=e.target.checked;await save();});$('check-updates').onclick=()=>attempt(async()=>renderUpdates(await api.updates()));$('download-update').onclick=()=>attempt(async()=>renderUpdates(await api.updateDownload()));$('install-update').onclick=()=>attempt(()=>api.updateInstall());$('auto-update').onchange=e=>attempt(async()=>renderUpdates(await api.updateAuto(e.target.checked)));$('github-login').onclick=()=>attempt(async()=>{const r=await api.updateGitHub();$('github-status').textContent=r.message;toast(r.message);});
+$('github-check').onclick=()=>attempt(async()=>{$('github-status').textContent=(await api.githubStatus()).message;});
+$('optional-tools-check').onclick=()=>attempt(async()=>{$('optional-tools-status').textContent=JSON.stringify(await api.toolsStatus(),null,2);});
+$('optional-tool-install').onclick=()=>attempt(async()=>{const r=await api.installOptional($('optional-tool-choice').value);toast(r.message||'Optional installer launched');$('optional-tools-status').textContent=JSON.stringify(await api.toolsStatus(),null,2);});
+attempt(async()=>{$('optional-tools-status').textContent=JSON.stringify(await api.toolsStatus(),null,2);$('github-status').textContent=(await api.githubStatus()).message;});
 function fileRows(items){const el=$('file-results');el.replaceChildren();for(const f of items){const b=node('button',undefined,'file-row');b.append(node('span',f.name||f.path),node('small',f.size===undefined?f.type:(f.size/1048576).toFixed(2)+' MiB'));b.onclick=()=>{$('file-path').value=f.path||$('file-path').value.replace(/\/$/,'')+'/'+f.name;};el.append(b);}}
 $('file-list').onclick=()=>attempt(async()=>{const r=await api.tool('list_files',{path:$('file-path').value});fileRows(JSON.parse(r.text));});$('file-read').onclick=()=>attempt(async()=>{$('file-content').value=(await api.tool('read_text_file',{path:$('file-path').value})).text;});$('file-save').onclick=()=>attempt(async()=>{if(!confirm('Save changes to '+$('file-path').value+'?'))return;const r=await api.tool('write_text_file',{path:$('file-path').value,content:$('file-content').value});toast(r.text);});$('largest').onclick=()=>attempt(async()=>{const r=JSON.parse((await api.tool('search_files',{path:$('file-path').value,sort:'size',limit:5})).text);fileRows(r.results);if(r.truncated)toast('Search limit reached. Results may be incomplete.');});
 async function pollTerminal(){if(!terminalId)return;try{const r=JSON.parse((await api.tool('process_output',{id:terminalId})).text);$('terminal-output').textContent=r.output||'(waiting for output)';if(!r.running){clearInterval(timer);$('terminal-output').textContent+='\nExited: '+r.exitCode;}}catch(e){clearInterval(timer);toast(e.message,true);}}
 $('terminal-start').onclick=()=>attempt(async()=>{const args=JSON.parse($('terminal-args').value||'[]');const r=JSON.parse((await api.tool('process_start',{command:$('terminal-command').value,args,cwd:$('terminal-cwd').value})).text);terminalId=r.id;clearInterval(timer);timer=setInterval(pollTerminal,700);await pollTerminal();});$('terminal-stop').onclick=()=>attempt(async()=>{if(terminalId)await api.tool('process_stop',{id:terminalId});});$('terminal-send').onclick=()=>attempt(async()=>{if(!terminalId)throw Error('Start a process first');await api.tool('process_input',{id:terminalId,input:$('terminal-input').value+'\n'});$('terminal-input').value='';});
+
+let currentCrawlId=null,crawlPollTimer=null;
+const completedCrawl=new Set(['completed','failed','cancelled']);
+async function refreshCrawl(){
+ if(!currentCrawlId)return;
+ try{
+  const state=JSON.parse((await api.tool('crawl_status',{id:currentCrawlId})).text);
+  $('crawl-status').textContent=JSON.stringify(state,null,2);
+  if(completedCrawl.has(state.status)){
+   clearInterval(crawlPollTimer);crawlPollTimer=null;
+   const result=JSON.parse((await api.tool('crawl_results',{id:currentCrawlId})).text);
+   $('crawl-results').value=result.pages.map(p=>p.url+'\n'+p.title+'\n'+p.text).join('\n\n---\n\n');
+  }
+ }catch(error){clearInterval(crawlPollTimer);crawlPollTimer=null;toast(error.message,true);}
+}
+$('crawl-start').onclick=()=>attempt(async()=>{
+ const url=$('crawl-url').value.trim(),maxPages=Number($('crawl-pages').value),maxDepth=Number($('crawl-depth').value);
+ const result=JSON.parse((await api.tool('crawl_start',{url,maxPages,maxDepth})).text);
+ currentCrawlId=result.id;
+ $('crawl-results').value='';
+ clearInterval(crawlPollTimer);crawlPollTimer=setInterval(refreshCrawl,1000);
+ await refreshCrawl();
+ toast('Crawl started; it continues while the Bridge stays running, even when hidden.');
+});
+$('crawl-refresh').onclick=()=>attempt(refreshCrawl);
+$('crawl-stop').onclick=()=>attempt(async()=>{
+ if(!currentCrawlId)return;
+ const result=JSON.parse((await api.tool('crawl_stop',{id:currentCrawlId})).text);
+ $('crawl-status').textContent=JSON.stringify(result,null,2);
+ await refreshCrawl();
+});
+
 api.on('approvals',renderApprovals);api.on('clients',items=>{if(state){state.clients=items;renderClients();}});api.on('settings',s=>{if(state){state.settings=s;renderSettings();}});api.on('remote',renderRemote);api.on('activity',renderActivity);api.on('updates:state',renderUpdates);
 attempt(async()=>{await refresh();await nativeStatus();});
 

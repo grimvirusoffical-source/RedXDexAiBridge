@@ -1,5 +1,14 @@
 # Red-XAI Bridge
 
+## Version 0.10.9: background jobs and crawling
+
+**Background execution:** A running Bridge can finish approved terminal jobs when its window is hidden. Use `process_start` to launch a process and `process_list` / `process_output` / `process_stop` to monitor it. Background-only mode blocks direct mouse, keyboard, and application-focus tools, but permits approved non-focus work. Explicit process timeouts can extend to 24 hours.
+
+**Public website crawling:** The Files & terminal page provides a crawler with progress and stop controls. MCP clients use `crawl_start`, `crawl_status`, `crawl_results`, `crawl_list`, and `crawl_stop`. A separate crawl permission defaults to **Deny**. Jobs remain owned by the pairing that started them. Each crawl is bounded to one public site, up to 20 pages and depth three, honors robots.txt and supported crawl-delay directives, and rejects private-network addresses and cross-site redirects.
+
+**Background limitations:** Jobs continue while the app is running, including when hidden. Fully quitting the application, logging out, shutting down, or suspending the computer can interrupt them. Work does not automatically resume after a reboot, and the Bridge does not independently invent new tasks. See [0.10.9 release notes](RELEASE-0.10.9.md).
+
+
 A permission-controlled desktop gateway for [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) clients. Connect local and remote development tools to Windows, macOS, or Linux while retaining control over permitted operations, approved folders, and individual client access.
 
 ## Downloads
@@ -51,6 +60,20 @@ The application cannot bypass Windows UAC or protected desktops, macOS privacy p
 Enter a supported Vortex API endpoint and credentials through the application's settings. Credentials are encrypted using the operating system's secure storage, where available; the application does not fall back to plaintext storage on Linux. A local gateway preset is provided for an existing service running at `http://127.0.0.1:18091/v1`.
 
 Network failures, authentication failures, and unavailable models are surfaced explicitly. A requested model or endpoint is not silently replaced with another one.
+
+## Updates and optional developer tools
+
+Packaged Bridge updates use **public GitHub releases directly**. Checking, downloading, and installing a stable update does not require GitHub CLI, Git, Node.js, or a personal access token. The desktop app provides **Check for updates**, **Download**, and **Restart & install**. Prereleases are excluded by default.
+
+On a new **Windows** installation, the installer offers Node.js LTS, Git, and GitHub CLI separately. Each is optional and skipped for silent installations and application updates. The installer uses Windows Package Manager (winget) for approved installations, if available. An unsuccessful optional install does not prevent Bridge installation.
+
+On **macOS and Linux**, the app reports which optional tools are present. Use the native package manager to install missing tools; DMG, AppImage and Debian packages do not silently install extra development tools.
+
+- Node.js: scripts and building the source. The installed Bridge includes its own runtime and does not need a separate Node.js installation.
+- Git: cloning, commits, branches, and other local repository commands.
+- GitHub CLI: optional repository management and sign-in using the **Connect GitHub CLI** button. The button opens an interactive authorization flow; complete it in a browser/terminal. It is not required for application updates.
+
+A version 0.10.8 installation used the older private-feed updater and may require **one manual 0.10.9 upgrade** from Releases. Subsequent stable releases use the public feed.
 
 ## Building and testing
 

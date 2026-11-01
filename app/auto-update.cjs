@@ -5,7 +5,7 @@ function createUpdateController({app, autoUpdater, store, emit=()=>{}, platform=
  const eligible=()=>app.isPackaged && ['darwin','win32','linux'].includes(platform) && !process.env.REDXDEX_DISABLE_UPDATES;
  function init(){
   if(!eligible()){push({phase:'unavailable',message:'Automatic installation requires an installed release package and a published GitHub release.'});return;}
-  autoUpdater.autoDownload=state.autoDownload;autoUpdater.autoInstallOnAppQuit=true;autoUpdater.allowPrerelease=false;autoUpdater.allowDowngrade=false;
+  autoUpdater.autoDownload=state.autoDownload;autoUpdater.autoInstallOnAppQuit=true;autoUpdater.allowPrerelease=true;autoUpdater.allowDowngrade=false;
   autoUpdater.on('checking-for-update',()=>push({phase:'checking',message:'Checking GitHub release metadata…'}));
   autoUpdater.on('update-available',i=>push({phase:'available',availableVersion:i.version,message:`Version ${i.version} available.`}));
   autoUpdater.on('update-not-available',()=>push({phase:'current',message:'You are up to date.'}));

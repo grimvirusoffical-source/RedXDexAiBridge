@@ -4,7 +4,7 @@ const root=path.join(__dirname,'..');
 const json=name=>JSON.parse(fs.readFileSync(path.join(root,name),'utf8'));
 test('release metadata and installer versions are synchronized',()=>{
  const p=json('package.json'),lock=json('package-lock.json');
- assert.equal(p.version,'0.10.8');
+ assert.equal(p.version,'0.10.9');
  assert.equal(lock.version,p.version);
  assert.equal(lock.packages[''].version,p.version);
  assert.equal(p.build.nsis.oneClick,true);
@@ -19,6 +19,7 @@ test('Windows/Linux release must pass platform jobs and keeps unsigned Mac out o
  assert.match(yml,/test "\$\(find artifacts -type f -name '\*\.exe' \| wc -l\)" -ge 1/);
  assert.match(yml,/\.AppImage/);
  assert.match(yml,/\.deb/);
- assert.match(yml,/gh release edit "\$RELEASE_TAG" --draft=false --prerelease/);
+ assert.match(yml,/gh release edit "\$RELEASE_TAG" --draft=false/);
+ assert.doesNotMatch(yml,/gh release edit "\$RELEASE_TAG" --draft=false --prerelease/);
  assert.doesNotMatch(yml,/gh release upload.*\.dmg/);
 });

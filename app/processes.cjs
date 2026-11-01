@@ -7,9 +7,9 @@ class ProcessManager {
   if(total>0&&active.length>=total)throw Error('Total process concurrency limit reached. Adjust Settings or wait for a process to finish.');
   if(perClient>0&&active.filter(x=>x.clientId===clientId).length>=perClient)throw Error('This AI reached its process concurrency limit. Other AIs retain their own slots.');
   if(typeof command!=='string'||!command||command.length>4096||!Array.isArray(args)||args.length>128||!args.every(x=>typeof x==='string'&&x.length<16384))throw Error('Invalid command or arguments');
-  if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>3600000)throw Error('Timeout must be 1 second to 1 hour');
+  if(!Number.isInteger(timeoutMs)||timeoutMs<1000||timeoutMs>86400000)throw Error('Timeout must be 1 second to 24 hours');
   while(this.sessions.size>=100){const old=[...this.sessions.entries()].find(([,v])=>!v.running);if(!old)break;this.sessions.delete(old[0]);}
-  const child=cp.spawn(command,args,{cwd,shell:false,detached:process.platform!=='win32',env:require('./platform.cjs').childEnvironment(),stdio:['pipe','pipe','pipe']});
+  const child=cp.spawn(command,args,{cwd,shell:false,windowsHide:true,detached:process.platform!=='win32',env:require('./platform.cjs').childEnvironment(),stdio:['pipe','pipe','pipe']});
   const id=crypto.randomUUID(),s={id,clientId,pid:child.pid,command,cwd,startedAt:Date.now(),running:true,output:'',offset:0,exitCode:null,child};
   this.sessions.set(id,s);
   const append=b=>{s.output+=b.toString();if(Buffer.byteLength(s.output)>this.maxBytes){const buf=Buffer.from(s.output);s.offset+=buf.length-this.maxBytes;s.output=buf.subarray(-this.maxBytes).toString();}};

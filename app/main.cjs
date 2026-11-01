@@ -40,14 +40,14 @@ if(process.argv.includes('--vortex-diagnostic')){
  function defaultClient(id){const s=core.settings();s.clientPolicies[id]=Object.fromEntries(Object.keys(s.permissions).map(k=>[k,'ask']));core.saveSettings(s);emit('clients',clients.list());}
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
  async function startGateway(){if(gateway)return {running:true,url:gateway.url};gateway=await startServer({clients,oauth,contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});return {running:true,url:gateway.url};}
- function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.desktopLease.reset();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
+ function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
  function remoteAutoConnect(){return require('./remote-preferences.cjs').enabled(core.root);}
  function rememberRemote(enabled){require('./remote-preferences.cjs').remember(core.root,enabled);}
  function clientSpec(client){if(!['codex','chatgpt','claude','vscode','cursor','gemini','vortex','Diagnostics'].includes(client))throw Error('Unsupported local client');const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
   if(!c){c=clients.create(client==='claude'?'Claude Desktop':client==='vscode'?'VS Code':client==='cursor'?'Cursor':client==='gemini'?'Gemini CLI':client,'local');defaultClient(c.id);atomicJSON(credentialFile,{id:c.id,token:c.token});}
   return {command:app.isPackaged?process.execPath:setup.nodeCommand(),args:[app.isPackaged?path.join(process.resourcesPath,'bridge-adapter.cjs'):path.join(__dirname,'adapter.cjs')],env:{...(app.isPackaged?{ELECTRON_RUN_AS_NODE:'1'}:{}),REDXDEX_CLIENT_KEY_FILE:credentialFile,REDXDEX_MANAGED:'1'}};
  }
- async function configureUpdateFeed(){const key=readSecret('github-updates');if(!key)throw Error('Private updates need GitHub access. Click “Use this computer’s GitHub login” in Settings. No token is bundled with the app.');require('electron-updater').autoUpdater.setFeedURL({provider:'github',owner:'grimvirusoffical-source',repo:'RedXDexAiBridge',private:true,token:key});}
+ async function configureUpdateFeed(){require('electron-updater').autoUpdater.setFeedURL(require('./public-updates.cjs').PUBLIC_FEED);}
  async function checkUpdates(){await configureUpdateFeed();await updateController.check();return updateController.status();}
  app.whenReady().then(async()=>{
   fs.mkdirSync(core.root,{recursive:true,mode:0o700});fs.chmodSync(core.root,0o700);
@@ -67,6 +67,21 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
   await win.loadFile(path.join(__dirname,'index.html'));
+  // DMG, AppImage and Debian packages cannot provide the interactive NSIS optional-tools page.
+  // Offer a first-run explanation without installing system packages or bypassing consent.
+  if(app.isPackaged&&process.platform!=='win32'&&!process.env.REDXDEX_SMOKE_OUTPUT&&win.isVisible()){
+   const notice=path.join(app.getPath('userData'),'optional-tools-onboarding.json');
+   if(!fs.existsSync(notice)){
+    atomicJSON(notice,{shownAt:new Date().toISOString()});
+    const prompt=setTimeout(async()=>{
+     if(!win||win.isDestroyed())return;
+     const choice=await dialog.showMessageBox(win,{type:'info',buttons:['Not now','Review optional installations'],defaultId:0,cancelId:0,
+      title:'Optional developer tools',message:'Node.js, Git and GitHub CLI are optional.',
+      detail:'Node.js runs scripts and builds the Bridge from source. Git supports local repository commands. GitHub CLI supports repository sign-in and terminal workflows. The installed Bridge and public software updates work without them. Nothing is installed without consent.'});
+     if(choice.response===1)await win.webContents.executeJavaScript("document.querySelector('[data-page=\\\"settings\\\"]')?.click()").catch(()=>{});
+    },650);prompt.unref?.();
+   }
+  }
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))console.error('SMOKE UI loaded');
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){
    await new Promise(r=>setTimeout(r,1200));console.error('SMOKE snapshot requested');
@@ -75,6 +90,22 @@ if(process.argv.includes('--vortex-diagnostic')){
    if(result.navigation.some(x=>!x.visible))throw Error('A navigation page did not open');
     result.quickSetup=await win.webContents.executeJavaScript("(async()=>{const check=await window.bridge.quickSetup();const ai=await window.bridge.addAi('generic','One Click CI Fixture');return {gatewayRunning:check.gatewayRunning,permissionDefault:check.permissionDefault,kind:ai.kind,generatedCredential:typeof ai.oneTimeInstructions==='string'&&ai.oneTimeInstructions.includes('Bearer '),clientAdded:!!ai.clientId,buttonFound:!!document.getElementById('quick-computer-setup'),selectorFound:!!document.getElementById('quick-ai-kind')};})()");
     if(!result.quickSetup.gatewayRunning||!result.quickSetup.generatedCredential||!result.quickSetup.clientAdded||!result.quickSetup.buttonFound||!result.quickSetup.selectorFound||result.quickSetup.permissionDefault!=='ask')throw Error('One-click setup smoke test failed');
+   // Verify actual terminal work continues after the user closes the window to tray.
+   const nodeBin=require('./platform.cjs').findExecutable('node');
+   if(!nodeBin)throw Error('Smoke requires Node.js for background job verification');
+   if(!core.settings().keepRunning)core.saveSettings({...core.settings(),keepRunning:true});
+   win.close();if(win.isDestroyed()||win.isVisible())throw Error('Closing to tray must keep the gateway running without showing the window');
+   const bg=core.processes.start({command:nodeBin,args:['-e',"setTimeout(()=>process.stdout.write('BACKGROUND_READY'),250)"],cwd:os.tmpdir(),clientId:'smoke-background',timeoutMs:6000});
+   let bgState;
+   for(let attempt=0;attempt<45;attempt++){
+    await new Promise(resolve=>setTimeout(resolve,100));
+    bgState=core.processes.read(bg.id,'smoke-background');
+    if(!bgState.running)break;
+   }
+   result.backgroundWhileHidden=!!bgState&&!bgState.running&&bgState.exitCode===0&&bgState.output.includes('BACKGROUND_READY')&&!!gateway?.url;
+   result.crawlerTools=core.definitions.filter(tool=>tool.name.startsWith('crawl_')).length;
+   if(!result.backgroundWhileHidden||result.crawlerTools!==5)throw Error('Hidden background execution or crawler tools failed');
+   win.show();
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
@@ -90,11 +121,11 @@ if(process.argv.includes('--vortex-diagnostic')){
  }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);quitting=true;app.exit(1);return;}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
- ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
+ ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
  ipc('stop:all',()=>stopEverything());
  ipc('folder:pick',async()=>{const r=await dialog.showOpenDialog(win,{properties:['openDirectory']});return r.canceled?null:r.filePaths[0];});
  ipc('approval:answer',(id,choice)=>approvals.resolve(id,choice));
- ipc('clients:revoke',id=>{clients.revoke(id);core.processes.stopClient(id);core.desktopLease.reset(id);for(const pending of approvals.list())if(pending.clientId===id)approvals.resolve(pending.id,'deny','Client revoked');emit('clients',clients.list());return clients.list();});
+ ipc('clients:revoke',id=>{clients.revoke(id);core.processes.stopClient(id);core.crawlJobs.stopClient(id);core.desktopLease.reset(id);for(const pending of approvals.list())if(pending.clientId===id)approvals.resolve(pending.id,'deny','Client revoked');emit('clients',clients.list());return clients.list();});
  ipc('clients:create',name=>{const c=clients.create(name,'manual');defaultClient(c.id);return c;});
  ipc('setup:localPlugin',()=>{clientSpec('chatgpt');return {message:'Local ChatGPT plugin paired. Enable the RedXDexAiBridge plugin in a client that can execute local MCP tools. Remote ChatGPT sessions still require the HTTPS/OAuth connection.'};});
  ipc('setup:connect',async client=>{await startGateway();const spec=clientSpec(client),r=setup.addClient(client,{spec});emit('clients',clients.list());return r;});
@@ -152,7 +183,7 @@ if(process.argv.includes('--vortex-diagnostic')){
 
  ipc('setup:diagnostics',async()=>{await startGateway();const spec=clientSpec('Diagnostics');const proc=cp.spawn(spec.command,spec.args,{env:{...process.env,...spec.env},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{proc.kill();reject(Error('MCP diagnostic timed out'));},5000);proc.stdout.on('data',b=>stdout+=b);proc.stderr.on('data',b=>stderr+=b);proc.on('error',e=>{clearTimeout(timer);reject(e);});proc.on('close',()=>{clearTimeout(timer);try{const r=JSON.parse(stdout.trim().split('\n')[0]);if(!r.result?.serverInfo)throw Error(r.error?.message||stderr||'MCP handshake failed');resolve({ok:true,version:r.result.serverInfo.version});}catch(e){reject(e);}});proc.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Diagnostics',version:'1'}}})+'\n');});});
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
- ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
+ ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();core.crawlJobs.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
  ipc('remote:start',async()=>{await startGateway();const status=await tunnel.start(gateway.url);if(status.phase!=='error')rememberRemote(true);return status;});
  ipc('remote:stop',()=>{rememberRemote(false);return tunnel.stop();});
  ipc('native:status',async()=>{const helper=await native.control({action:'status'}).catch(e=>({error:e.message}));const status=process.platform==='darwin'?require('electron').systemPreferences.getMediaAccessStatus('screen'):'unknown';return native.permissionStatus(helper,status);});
@@ -167,7 +198,10 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));
- ipc('updates:github',async()=>{const bin=require('./platform.cjs').findExecutable('gh');if(!bin)throw Error('GitHub CLI not found. Sign in with gh auth login first.');const {stdout}=await require('node:util').promisify(cp.execFile)(bin,['auth','token','--hostname','github.com'],{timeout:10000,maxBuffer:16384});const value=stdout.trim();if(!value)throw Error('GitHub is not signed in');saveSecret('github-updates',value);return {ok:true,message:'GitHub access saved using OS-backed encryption; credentials are not included in the application.'};});
+ ipc('updates:github',async()=>require('./github-cli.cjs').beginLogin({open:url=>shell.openExternal(url)}));
+ ipc('github:status',async()=>require('./github-cli.cjs').status());
+ ipc('tools:status',()=>require('./optional-tools.cjs').status());
+ ipc('optional:install',async tool=>{const {IDS}=require('./optional-tools.cjs');if(!Object.hasOwn(IDS,tool))throw Error('Unknown optional tool');const choice=await dialog.showMessageBox(win,{type:'question',buttons:['Cancel','Install selected tool'],defaultId:0,cancelId:0,title:'Optional developer tool',message:'Install '+IDS[tool].label+'?',detail:IDS[tool].reason+'\nThe package manager may request operating-system authentication.'});if(choice.response!==1)return {cancelled:true,message:'Installation cancelled'};return require('./optional-install.cjs').begin(tool);});
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
  ipc('vortex:status',()=>vortexStatus());
  ipc('vortex:connection',()=>({...vortexConfig(),keySaved:fs.existsSync(secretFile('vortex-key'))}));
@@ -182,5 +216,5 @@ if(process.argv.includes('--vortex-diagnostic')){
  });
  ipc('vortex:chat',(messages,model)=>vortex.chat(readSecret('vortex-key'),messages,model||vortex.DEFAULT_MODEL,globalThis.fetch,vortexConfig()));ipc('vortex:disconnect',()=>{try{fs.unlinkSync(secretFile('vortex-key'));}catch{}return true;});
  app.on('activate',show);app.on('window-all-closed',()=>{if(process.platform!=='darwin'||!core.settings().keepRunning){quitting=true;app.quit();}});
- app.on('before-quit',()=>{quitting=true;approvals?.cancelAll('Bridge is quitting');core.processes.stopAll();tunnel?.stop();gateway?.server.closeAllConnections?.();gateway?.server.close();try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}});
+ app.on('before-quit',()=>{quitting=true;approvals?.cancelAll('Bridge is quitting');core.processes.stopAll();core.crawlJobs.stopAll();tunnel?.stop();gateway?.server.closeAllConnections?.();gateway?.server.close();try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}});
 }
