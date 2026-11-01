@@ -9,7 +9,7 @@
 - Added public schema-only MCP discovery. Every computer tool, including status and profile, still requires verified credentials. Invalid credentials are not downgraded to anonymous access.
 - Added explicit OAuth security metadata, authentication challenges, and an authenticated stable connection-profile tool.
 - Added one-click Codex configuration through the official Codex CLI. Existing configuration is backed up, and Codex uses its own bridge credentials rather than Claude's.
-- Preserved per-AI Deny / Ask / Always Allow, local pairing consent, emergency stop, approved folders, and all existing tools. Vortex integration is unchanged.
+- Preserved per-client Deny / Ask / Always Allow, local pairing consent, emergency stop, approved folders, and all existing tools. Vortex integration is unchanged.
 
 ## Verification at packaging
 

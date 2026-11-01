@@ -15,7 +15,7 @@ This release uses the existing private RedXDexAiBridge repository and preserves 
 - Bundled Cloudflare tunnel helpers pinned to release 2026.10.5 and verified by SHA-256 before packaging.
 - Fixed Vortex's hard-coded-endpoint failure: API addresses are now configurable, a local gateway preset is available, DNS/proxy/auth/model errors are distinguished, and redirects cannot forward the saved key to another endpoint.
 - Vortex Pro remains the default. A missing or unauthorized Pro model is reported rather than silently substituted.
-- Kept Vortex keys in OS-backed encrypted storage; copied editor settings exclude the secret. Existing per-AI permissions, Always Allow, approvals, emergency stop and OAuth pairing remain in place.
+- Kept Vortex keys in OS-backed encrypted storage; copied editor settings exclude the secret. Existing per-client permissions, Always Allow, approvals, emergency stop and OAuth pairing remain in place.
 
 ## Verification
 
@@ -27,4 +27,4 @@ Hosted Windows/Linux jobs did not start because the GitHub runner account was un
 
 The Mac app is Developer ID signed but not Apple-notarized. The Windows installer is unsigned. Native Windows/Linux computer-control behavior still needs validation on those operating systems. Private updates require GitHub authorization. The existing VPS connection still uses a quick-tunnel address: Mac app restarts preserve it, but a VPS tunnel-service restart can rotate it.
 
-The owner's Mac was configured to the reachable local Vortex gateway at http://127.0.0.1:18091/v1. Other computers need their own reachable Vortex endpoint; this release does not repair the public ai.red-xai.com DNS record or modify the Vortex server repository.
+The owner's Mac was configured to the reachable local Vortex gateway at http://127.0.0.1:18091/v1. Other computers need their own reachable Vortex endpoint; this release does not repair the external Vortex API DNS record or modify the Vortex server repository.

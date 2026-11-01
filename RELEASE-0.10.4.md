@@ -3,8 +3,8 @@
 ## Changes
 
 - Windows NSIS installer now uses the one-click, per-user install flow. No automatic UAC or privacy bypass and no deletion of user bridge data during uninstall.
-- One-click setup for this computer checks the authenticated gateway and OS desktop-input readiness from the app without silently granting AI permissions.
-- Add a new AI supports local Codex CLI, Claude Desktop, VS Code and Cursor MCP configurations with backups. A custom local MCP AI receives its own individually revocable, one-time bearer token, localhost-only MCP URL and Ask permissions. A remote AI uses an HTTPS endpoint with OAuth and requires pairing approval. The app does not silently pair external services or expose credentials as a query string.
+- One-click setup for this computer checks the authenticated gateway and OS desktop-input readiness from the app without silently granting client permissions.
+- The add-client workflow supports local Codex CLI, Claude Desktop, VS Code and Cursor MCP configurations with backups. A custom local MCP client receives its own individually revocable, one-time bearer token, localhost-only MCP URL and Ask permissions. A remote client uses an HTTPS endpoint with OAuth and requires pairing approval. The app does not silently pair external services or expose credentials as a query string.
 - Linux packaging now automatically prepares the pinned, checksum-verified tunnel helper before building AppImage/Deb packages.
 - Linux readiness distinguishes X11 with xdotool, Wayland (portal screen capture but no global input injection) and headless sessions. It reports missing prerequisites rather than pretending OS permissions can be granted automatically.
 - Additional pure setup/credential tests and a graphical smoke check for the new setup IPC/UI.

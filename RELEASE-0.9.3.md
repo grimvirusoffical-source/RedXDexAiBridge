@@ -5,7 +5,7 @@ This release preserves the 0.9.2 connection repair and fixes screen-permission d
 - The Desktop page checks Screen Recording authorization for the signed Electron application itself, rather than treating a helper-process permission as proof of capture access.
 - Screen-capture failures explain how to grant the correct app permission and restart without weakening macOS controls.
 - The cloud plugin is now bound to the registered private RedXDexAiBridge Remote App, created through ChatGPT's custom-MCP interface. Pairing still requires the user's approval on the Mac.
-- Local Codex, Claude Desktop, VS Code and Cursor setup, VPS reconnection, per-AI permissions and emergency stop remain unchanged.
+- Local Codex, Claude Desktop, VS Code and Cursor setup, VPS reconnection, per-client permissions and emergency stop remain unchanged.
 - Vortex integration was not modified.
 
 ## Verified
