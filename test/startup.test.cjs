@@ -14,6 +14,9 @@ test('Windows startup preserves existing tunnel identity and reconnects temporar
  try{
   let result=configureStartup(app,true,{platform:'win32',homeDirectory:home});
   assert.equal(result.secureTunnelConfigured,false);
+  assert.deepEqual(value,{openAtLogin:true});
+  // Launch at sign-in must never expose an unrequested remote tunnel.
+  configureStartup(app,true,{platform:'win32',homeDirectory:home,remoteAutoConnect:true});
   assert.deepEqual(value,{openAtLogin:true,args:['--connect-remote']});
   const dir=path.join(home,'.redxdex-ai-bridge');fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir,'openai-tunnel-id.txt'),'fixture');

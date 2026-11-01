@@ -1,15 +1,15 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const MARKER='X-RedXAI-Managed=true';
-function configureStartup(app,enabled,{platform=process.platform,env=process.env,configDirectory,homeDirectory=os.homedir()}={}){
+function configureStartup(app,enabled,{platform=process.platform,env=process.env,configDirectory,homeDirectory=os.homedir(),remoteAutoConnect=false}={}){
  if(typeof enabled!=='boolean')throw Error('Startup preference must be a boolean');
  if(platform==='darwin'){app.setLoginItemSettings({openAtLogin:enabled});return {enabled,platform};}
  if(platform==='win32'){
   const secureTunnelConfigured=fs.existsSync(path.join(homeDirectory,'.redxdex-ai-bridge','openai-tunnel-id.txt'));
   const value={openAtLogin:enabled};
-  if(enabled&&!secureTunnelConfigured)value.args=['--connect-remote'];
+  if(enabled&&remoteAutoConnect&&!secureTunnelConfigured)value.args=['--connect-remote'];
   app.setLoginItemSettings(value);
-  return {enabled,platform,secureTunnelConfigured};
+  return {enabled,platform,secureTunnelConfigured,remoteAutoConnect};
  }
  if(platform!=='linux')throw Error('Automatic startup is not supported on this platform');
  const config=configDirectory||env.XDG_CONFIG_HOME||path.join(os.homedir(),'.config');

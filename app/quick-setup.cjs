@@ -1,7 +1,7 @@
 'use strict';
 const {findExecutable}=require('./platform.cjs');
 
-const LOCAL_CLIENTS=Object.freeze(['codex','claude','vscode','cursor']);
+const LOCAL_CLIENTS=Object.freeze(['codex','claude','vscode','cursor','gemini']);
 const AI_TYPES=Object.freeze([...LOCAL_CLIENTS,'generic','remote']);
 
 function validateType(kind){

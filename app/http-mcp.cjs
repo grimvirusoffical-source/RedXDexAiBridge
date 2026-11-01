@@ -52,7 +52,7 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
     const discovery=['initialize','ping','tools/list','notifications/initialized'].includes(message.method);
     if(!discovery||bearer){
      const failure={error:'Authentication required',_meta:{'mcp/www_authenticate':[challenge]}};
-     if(message.id!==undefined&&message.method==='tools/call')Object.assign(failure,{jsonrpc:'2.0',id:message.id,result:{content:[{type:'text',text:'Connect RedXDexAiBridge and approve pairing on your Mac before using computer tools.'}],isError:true,_meta:{'mcp/www_authenticate':[challenge]}}});
+     if(message.id!==undefined&&message.method==='tools/call')Object.assign(failure,{jsonrpc:'2.0',id:message.id,result:{content:[{type:'text',text:'Connect RedXDexAiBridge and approve pairing on your computer before using computer tools.'}],isError:true,_meta:{'mcp/www_authenticate':[challenge]}}});
      return json(401,failure);
     }
     const result=await dispatch(message,{discoveryOnly:true});
