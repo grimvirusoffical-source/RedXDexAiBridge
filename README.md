@@ -1,5 +1,11 @@
 # Red-XAI Bridge (RedXDexAiBridge)
 
+## Version 0.10.8 release candidate
+
+Windows x64 and Linux x64 installers are built and verified by native CI on a version tag. Windows is a per-user, single-click NSIS setup; Linux has AppImage and Debian packages. They are distributed as a **prerelease** until signing and additional external-client compatibility work are complete. The Windows executable is not yet Authenticode signed. Source and UI tests run on macOS, but a new signed and notarized macOS installer is not included in this candidate; do not confuse source checks with installation certification.
+
+**When a cloud AI reports an internal connection failure:** open Bridge → AI connections, make sure the remote state is verified Online, and copy the currently displayed HTTPS MCP address. Confirm that its OAuth resource metadata is reachable. Reconnect the AI in the cloud client through OAuth and approve the new request in Bridge. If the app uses a separately registered plugin tunnel, its connector may require repair or re-linking outside the desktop Bridge; a working local gateway alone does not fix an independently broken plugin registration. The bundled temporary Cloudflare URL may change on restart. A stable owned relay is required to avoid repeating that pairing after a URL change.
+
 ## One-click connection setup (Windows / macOS / Linux)
 
 The Overview page offers **One-click setup and start at sign-in**. In an installed app, this starts the authenticated local MCP gateway, runs desktop-readiness checks and registers the app for login startup, so local AI clients can reconnect after a reboot. The button is the user's affirmative choice to enable startup. It never grants OS-level privacy consent, bypasses a lock screen, or enables unsandboxed terminal access.
