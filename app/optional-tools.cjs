@@ -6,16 +6,16 @@ const IDS=Object.freeze({
  git:{label:'Git',winget:'Git.Git',reason:'Optional for cloning, commits and branches. Public Bridge updates work without Git.'},
  gh:{label:'GitHub CLI',winget:'GitHub.cli',reason:'Optional for GitHub repository authentication and terminal workflows. Bridge updates do not require it.'}
 });
-function installed(name,{platform=process.platform,env=process.env,exists=file=>fs.existsSync(file)}={}){
+function installed(name,{platform=process.platform,env=process.env,exists=file=>fs.existsSync(file),lookup=findExecutable}={}){
  if(!Object.hasOwn(IDS,name))throw Error('Unknown optional tool');
- const native=findExecutable(name,platform,env);
+ const native=lookup(name,platform,env);
  if(native)return native;
  if(platform!=='win32')return null;
- const roots=[env.ProgramFiles,env['ProgramFiles(x86)'],env.LOCALAPPDATA,path.join(os.homedir(),'AppData','Local')].filter(Boolean);
+ const roots=[env.ProgramFiles,env['ProgramFiles(x86)'],env.LOCALAPPDATA,env.USERPROFILE||path.win32.join(os.homedir(),'AppData','Local')].filter(Boolean);
  const candidates={
-  node:roots.flatMap(root=>[path.join(root,'nodejs','node.exe'),path.join(root,'Programs','nodejs','node.exe')]),
-  git:roots.flatMap(root=>[path.join(root,'Git','cmd','git.exe'),path.join(root,'Git','bin','git.exe'),path.join(root,'Programs','Git','cmd','git.exe')]),
-  gh:roots.flatMap(root=>[path.join(root,'GitHub CLI','gh.exe'),path.join(root,'Programs','GitHub CLI','gh.exe'),path.join(root,'Microsoft','WinGet','Links','gh.exe')])
+  node:roots.flatMap(root=>[path.win32.join(root,'nodejs','node.exe'),path.win32.join(root,'Programs','nodejs','node.exe')]),
+  git:roots.flatMap(root=>[path.win32.join(root,'Git','cmd','git.exe'),path.win32.join(root,'Git','bin','git.exe'),path.win32.join(root,'Programs','Git','cmd','git.exe')]),
+  gh:roots.flatMap(root=>[path.win32.join(root,'GitHub CLI','gh.exe'),path.win32.join(root,'Programs','GitHub CLI','gh.exe'),path.win32.join(root,'Microsoft','WinGet','Links','gh.exe')])
  };
  return candidates[name].find(file=>{try{return exists(file);}catch{return false;}})||null;
 }
