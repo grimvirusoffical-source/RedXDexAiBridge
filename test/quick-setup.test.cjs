@@ -56,3 +56,31 @@ test('one-click UI is linked into the packaged app and handlers are exposed by p
  assert.match(html,/quick-setup-ui\.js/);assert.match(preload,/setup:quick/);assert.match(preload,/setup:addAI/);
  assert.match(main,/ipc\('setup:quick'/);assert.match(main,/ipc\('setup:addAI'/);
 });
+
+test('remote AI one-click waits for a verified HTTPS endpoint instead of a connecting URL',async()=>{
+ const phases=[
+  {phase:'connecting',url:null},
+  {phase:'connecting',url:'https://bridge.example/mcp'},
+  {phase:'online',url:'https://bridge.example/mcp'}
+ ];
+ let index=0;
+ const tunnel={desired:true,status:()=>phases[Math.min(index,phases.length-1)]};
+ const result=await quick.waitForVerifiedRemote(tunnel,{attempts:4,intervalMs:1,sleep:async()=>{index++}});
+ assert.equal(result.phase,'online');assert.equal(result.url,'https://bridge.example/mcp');
+ assert.equal(index,2);
+ await assert.rejects(quick.waitForVerifiedRemote({desired:true,status:()=>({phase:'online',url:'http://bridge.example/mcp'})},{attempts:1}),/HTTPS/);
+ await assert.rejects(quick.waitForVerifiedRemote({desired:true,status:()=>({phase:'online',url:'https://user:pass@bridge.example/mcp'})},{attempts:1}),/HTTPS/);
+ await assert.rejects(quick.waitForVerifiedRemote({desired:true,status:()=>({phase:'connecting',url:null})},{attempts:2,sleep:async()=>{}}),/timeout/);
+ await assert.rejects(quick.waitForVerifiedRemote({desired:false,status:()=>({phase:'off',message:'Stopped by user'})},{attempts:2}),/Stopped by user/);
+});
+test('remote intent in settings and connection toggles are wired into runtime',()=>{
+ const main=fs.readFileSync(path.join(__dirname,'..','app','main.cjs'),'utf8');
+ const core=fs.readFileSync(path.join(__dirname,'..','app','core.cjs'),'utf8');
+ const startup=fs.readFileSync(path.join(__dirname,'..','app','startup.cjs'),'utf8');
+ assert.match(core,/remoteAutoConnect:false/);
+ assert.match(core,/Invalid preference/);
+ assert.match(main,/setRemoteAutoConnect\(true\)/);
+ assert.match(main,/setRemoteAutoConnect\(false\)/);
+ assert.match(main,/waitForVerifiedRemote\(tunnel\)/);
+ assert.match(startup,/enabled&&remoteAutoConnect/);
+});

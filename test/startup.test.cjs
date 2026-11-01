@@ -12,8 +12,10 @@ test('Windows startup preserves existing tunnel identity and reconnects temporar
  const home=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-win-startup-'));
  let value;const app={setLoginItemSettings:v=>{value=v;}};
  try{
-  let result=configureStartup(app,true,{platform:'win32',homeDirectory:home});
+  let result=configureStartup(app,true,{platform:'win32',homeDirectory:home,remoteAutoConnect:false});
   assert.equal(result.secureTunnelConfigured,false);
+  assert.deepEqual(value,{openAtLogin:true});
+  result=configureStartup(app,true,{platform:'win32',homeDirectory:home,remoteAutoConnect:true});
   assert.deepEqual(value,{openAtLogin:true,args:['--connect-remote']});
   const dir=path.join(home,'.redxdex-ai-bridge');fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir,'openai-tunnel-id.txt'),'fixture');

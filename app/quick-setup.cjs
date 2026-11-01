@@ -54,4 +54,27 @@ function instructionsFor(kind,{clientName,url,token}={}){
  if(kind==='remote')return 'Connect your remote AI to the app’s HTTPS MCP URL using OAuth, then approve its pairing request here. This URL may change when a temporary tunnel restarts. Do not embed bearer tokens in remote clients.';
  return 'Client configuration installed. Restart or reload the selected AI application. Review its individual bridge permissions before using computer tools.';
 }
-module.exports={LOCAL_CLIENTS,AI_TYPES,validateType,validateName,readiness,instructionsFor};
+function verifiedHttpsMcpURL(value){
+  if(typeof value!=='string')return false;
+  try{
+    const url=new URL(value);
+    return url.protocol==='https:'&&url.pathname==='/mcp'&&!url.search&&!url.hash&&!url.username&&!url.password;
+  }catch{return false;}
+}
+async function waitForVerifiedRemote(tunnel,{attempts=180,intervalMs=300,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
+ if(!tunnel||typeof tunnel.status!=='function')throw Error('Remote tunnel state is unavailable');
+ if(!Number.isSafeInteger(attempts)||attempts<1||attempts>600)throw Error('Invalid connection timeout');
+ for(let i=0;i<attempts;i++){
+  const current=tunnel.status();
+  if(current.phase==='online'){
+   if(!verifiedHttpsMcpURL(current.url))throw Error('Remote endpoint lacks a valid authenticated HTTPS MCP URL');
+   return current;
+  }
+  if(current.phase==='off'||current.phase==='error'||tunnel.desired===false){
+   throw Error('Remote bridge is not connected: '+(current.message||current.phase));
+  }
+  if(i!==attempts-1)await sleep(intervalMs);
+ }
+ throw Error('Remote HTTPS endpoint was not verified before the connection timeout; local MCP remains available. Check your network, then try again.');
+}
+module.exports={LOCAL_CLIENTS,AI_TYPES,validateType,validateName,readiness,instructionsFor,verifiedHttpsMcpURL,waitForVerifiedRemote};
