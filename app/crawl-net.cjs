@@ -93,7 +93,9 @@ function robotsRules(text,userAgent='redxdexaibridge'){
  const selected=groups.filter(g=>g.agents.some(a=>(a==='*'?1:a&&agent.includes(a)?a.length+1:0)===best));
  const directives=selected.flatMap(g=>g.rules);
  const delayDirective=directives.find(r=>r.key==='crawl-delay');
- const delayMs=delayDirective?Math.min(3000,Math.max(200,Number(delayDirective.value)*1000||200)):200;
+ const requestedDelay=delayDirective?Number(delayDirective.value)*1000:200;
+ if(!Number.isFinite(requestedDelay)||requestedDelay>30000)throw Error('Website crawl-delay exceeds the safe 30-second limit; refusing to crawl');
+ const delayMs=Math.max(200,requestedDelay);
  return {delayMs,allowed(url){
   const p=typeof url==='string'?url:new URL(url).pathname;
   let match=null;
