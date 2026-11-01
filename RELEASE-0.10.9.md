@@ -19,6 +19,15 @@
 - robots.txt is consulted and crawl-delay honored. Sites demanding a delay the crawler cannot safely honor are not crawled.
 - Crawling collects public text and same-site links; it does not execute JavaScript, sign into websites, bypass access controls, or override robots policy.
 
+## Updates and setup
+
+- The updater now uses the **public GitHub feed**, not a private token, GitHub CLI or any separately installed Git/Node.js binary.
+- Stable Windows and Linux releases are published through native platform CI so the normal updater can discover them.
+- GitHub CLI has a separate interactive login flow and status check. It is only for optional repository workflows, not for software update authentication.
+- The Windows one-click installer prompts separately to offer optional Node.js LTS, Git and GitHub CLI via winget, explains what is unavailable if skipped, and does not install dependencies during silent or automatic updates.
+- macOS/Linux installations show optional-tool status in Settings; their distribution formats do not automatically install development packages.
+- Upgrading from 0.10.8 may require a one-time manual installer because that older version still required private-feed credentials.
+
 ## Verification
 
 - Source-level and isolated runtime tests on Windows, macOS, and Linux through GitHub Actions, including bounded crawler, denial/abort, job ownership, and permission checks.
