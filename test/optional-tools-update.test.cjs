@@ -37,18 +37,24 @@ test('GitHub CLI connection reports missing, unauthed and logged-in states separ
  const unauthed=await github.status({platform:'win32',find,run:async()=>{throw Error('not authenticated');}});
  assert.equal(unauthed.installed,true);assert.equal(unauthed.authenticated,false);
 });
-test('GitHub login opens an interactive Windows terminal without token extraction',async()=>{
+test('GitHub login returns an authorization code without an interactive terminal',async()=>{
  const bin='C:\\Program Files\\GitHub CLI\\gh.exe';
- const calls=[];
- const result=await github.beginLogin({platform:'win32',find:()=>bin,run:async()=>{throw Error('not logged in');},spawn:(file,args,opts)=>{
-  calls.push({file,args,opts});return {unref(){}};
- }});
- assert.equal(result.started,true);assert.equal(calls.length,1);
- assert.equal(calls[0].args.includes('-EncodedCommand'),true);
- const code=calls[0].args[calls[0].args.indexOf('-EncodedCommand')+1];
- const decoded=Buffer.from(code,'base64').toString('utf16le');
- assert.match(decoded,/auth login --hostname github.com --git-protocol https --web/);
- assert.doesNotMatch(decoded,/auth token|client_secret/);
+ const {EventEmitter}=require('node:events');
+ const calls=[],opened=[];
+ const spawn=(file,args,opts)=>{
+  calls.push({file,args,opts});
+  const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>{};
+  queueMicrotask(()=>child.stderr.emit('data',Buffer.from('First copy your one-time code: ABCD-1234\n')));
+  return child;
+ };
+ const result=await github.beginLogin({platform:'win32',find:()=>bin,run:async()=>{throw Error('not signed in');},spawn,open:async url=>opened.push(url)});
+ assert.equal(result.started,true);assert.equal(result.deviceCode,'ABCD-1234');
+ assert.deepEqual(opened,[github.DEVICE_URL]);
+ assert.equal(calls.length,1);assert.equal(calls[0].file,bin);
+ assert.deepEqual(calls[0].args,['auth','login','--hostname','github.com','--git-protocol','https','--web']);
+ assert.equal(calls[0].opts.shell,false);
+ assert.equal(calls[0].opts.windowsHide,true);
+ assert.equal(github.deviceCodeFrom('Use code abcd-1234'), 'ABCD-1234');
 });
 test('Windows installer prompts are optional and silent updates skip them',()=>{
  const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
