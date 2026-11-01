@@ -1,13 +1,29 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {configureStartup}=require('../app/startup.cjs');
-test('macOS and Windows use the native startup API and validate preferences',()=>{
- for(const platform of ['darwin','win32']){
-  let value;const app={setLoginItemSettings:v=>{value=v;}};
-  assert.equal(configureStartup(app,true,{platform}).enabled,true);assert.deepEqual(value,{openAtLogin:true});
-  configureStartup(app,false,{platform});assert.deepEqual(value,{openAtLogin:false});
-  assert.throws(()=>configureStartup(app,'yes',{platform}),/boolean/);
- }
+test('macOS and Windows use native login startup without bypassing user settings',()=>{
+ let value;const app={setLoginItemSettings:v=>{value=v;}};
+ assert.equal(configureStartup(app,true,{platform:'darwin'}).enabled,true);
+ assert.deepEqual(value,{openAtLogin:true});
+ configureStartup(app,false,{platform:'darwin'});assert.deepEqual(value,{openAtLogin:false});
+ assert.throws(()=>configureStartup(app,'yes',{platform:'darwin'}),/boolean/);
+});
+test('Windows startup preserves existing tunnel identity and reconnects temporary relays',()=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-win-startup-'));
+ let value;const app={setLoginItemSettings:v=>{value=v;}};
+ try{
+  let result=configureStartup(app,true,{platform:'win32',homeDirectory:home});
+  assert.equal(result.secureTunnelConfigured,false);
+  assert.deepEqual(value,{openAtLogin:true,args:['--connect-remote']});
+  const dir=path.join(home,'.redxdex-ai-bridge');fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir,'openai-tunnel-id.txt'),'fixture');
+  result=configureStartup(app,true,{platform:'win32',homeDirectory:home});
+  assert.equal(result.secureTunnelConfigured,true);
+  assert.deepEqual(value,{openAtLogin:true});
+  configureStartup(app,false,{platform:'win32',homeDirectory:home});
+  assert.deepEqual(value,{openAtLogin:false});
+  assert.throws(()=>configureStartup(app,'yes',{platform:'win32',homeDirectory:home}),/boolean/);
+ }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
 test('Linux startup quotes its executable and removes only its managed entry',()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-startup-'));
