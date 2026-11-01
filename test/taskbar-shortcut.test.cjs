@@ -13,9 +13,12 @@ test('taskbar guide opt-in is a regular file scoped to user data and only on Win
   assert.equal(pending(home,{platform:'darwin'}),false);
   assert.deepEqual(dismiss(home,{platform:'win32'}),{dismissed:true});
   assert.equal(pending(home,{platform:'win32'}),false);
-  fs.symlinkSync(path.join(home,'missing-file'),marker(home));
-  assert.equal(pending(home,{platform:'win32'}),false);
-  assert.deepEqual(dismiss(home,{platform:'win32'}),{dismissed:false});
+  if(process.platform!=='win32'){
+   // Creating symlinks requires extra privileges on many Windows installs.
+   fs.symlinkSync(path.join(home,'missing-file'),marker(home));
+   assert.equal(pending(home,{platform:'win32'}),false);
+   assert.deepEqual(dismiss(home,{platform:'win32'}),{dismissed:false});
+  }
  }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
 test('interactive NSIS installer offers independent desktop shortcut and taskbar choice',()=>{
