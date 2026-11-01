@@ -19,6 +19,7 @@ test('Windows/Linux release must pass platform jobs and keeps unsigned Mac out o
  assert.match(yml,/test "\$\(find artifacts -type f -name '\*\.exe' \| wc -l\)" -ge 1/);
  assert.match(yml,/\.AppImage/);
  assert.match(yml,/\.deb/);
- assert.match(yml,/gh release edit "\$RELEASE_TAG" --draft=false --prerelease/);
+ assert.match(yml,/gh release edit "\$RELEASE_TAG" --draft=false/);
+ assert.doesNotMatch(yml,/gh release edit "\$RELEASE_TAG" --draft=false --prerelease/);
  assert.doesNotMatch(yml,/gh release upload.*\.dmg/);
 });
