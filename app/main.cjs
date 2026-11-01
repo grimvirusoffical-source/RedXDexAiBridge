@@ -183,7 +183,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));
- ipc('updates:github',async()=>require('./github-cli.cjs').beginLogin());
+ ipc('updates:github',async()=>require('./github-cli.cjs').beginLogin({open:url=>shell.openExternal(url)}));
  ipc('github:status',async()=>require('./github-cli.cjs').status());
  ipc('tools:status',()=>require('./optional-tools.cjs').status());
  ipc('vortex:save',key=>{saveSecret('vortex-key',vortex.validateKey(key));return true;});
