@@ -118,6 +118,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Verify live Red-XAI Quick Login supports Bridge before publishing
+        run: node scripts/check-production-auth.cjs
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
