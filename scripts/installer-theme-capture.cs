@@ -16,6 +16,8 @@ class InstallerThemeCapture {
  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr data);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+ [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetProp(IntPtr window,string name);
  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr window);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder text,int size);
  [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr window,int message,IntPtr wParam,IntPtr lParam);
@@ -59,8 +61,9 @@ class InstallerThemeCapture {
          IntPtr progress=IntPtr.Zero,art=IntPtr.Zero,status=IntPtr.Zero;
          EnumChildWindows(window,delegate(IntPtr child,IntPtr ignored) {
            int id=GetDlgCtrlID(child); if(id==1004)progress=child; if(id==1006)status=child;
-           var className=new StringBuilder(256);GetClassName(child,className,className.Capacity);Rect bounds;GetWindowRect(child,out bounds);
-           if(String.Equals(className.ToString(),"Static",StringComparison.OrdinalIgnoreCase)&&id==0&&bounds.Right-bounds.Left==200&&bounds.Bottom-bounds.Top==232)art=child;
+           // NativeWindow.AssignHandle may replace a zero child control ID.
+           // Resolve the window registered by the drawing owner instead.
+           IntPtr registered=GetProp(child,"RedXInstallerThemeWindow");if(registered!=IntPtr.Zero&&IsWindow(registered))art=registered;
            return true;
          },IntPtr.Zero);
          if(progress!=IntPtr.Zero&&(fallback||(art!=IntPtr.Zero&&IsWindowVisible(art)))) {
@@ -68,6 +71,8 @@ class InstallerThemeCapture {
            int native=high>low?(pos-low)*100/(high-low):0,rendered=native;
            if(fallback){if(!IsWindowVisible(progress)||art!=IntPtr.Zero)throw new Exception("Artwork failure did not retain the native progress bar.");fallbackSamples++;}
            else{
+             var artClass=new StringBuilder(256);GetClassName(art,artClass,artClass.Capacity);Rect bounds;GetWindowRect(art,out bounds);
+             if(!String.Equals(artClass.ToString(),"Static",StringComparison.OrdinalIgnoreCase)||bounds.Right-bounds.Left!=200||bounds.Bottom-bounds.Top!=232)throw new Exception("Registered artwork has an unexpected class or dimensions.");
              uint helper;GetWindowThreadProcessId(art,out helper);
              if(helper==0||helper==(uint)process.Id)throw new Exception("Artwork must be owned by its separate drawing process.");
              helpers.Add((int)helper);
