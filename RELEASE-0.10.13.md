@@ -4,10 +4,10 @@
 
 - The Bridge creates an HTTPS tunnel directly from the computer when the owner clicks **Create HTTPS link on this PC**. Previously enabled remote connections also auto-start on Bridge launch.
 - The remote endpoint is verified against its own OAuth protected-resource metadata before any ChatGPT copy action becomes available.
-- When the verified endpoint is ready, the **AI connections** page enables **Copy for ChatGPT**. The overview displays a reminder and, when supported by the OS, the installed app sends a one-time connection-ready notification for each new URL.
+- When the verified endpoint is ready, the **client connections** page enables **Copy for ChatGPT**. The overview displays a reminder and, when supported by the OS, the installed app sends a one-time connection-ready notification for each new URL.
 - Clicking the button copies a short request to update the **existing private Red-XAI Bridge plugin** with the current URL while preserving OAuth authentication, settings, pairing consent and permissions. No API key, client token, or private credential is copied.
 - The existing **Copy MCP URL** action remains available for MCP clients that accept a plain URL.
-- The one-click **Remote ChatGPT / MCP AI (OAuth)** setup flow also uses the ChatGPT-specific copy action.
+- The one-click **Remote ChatGPT / MCP client (OAuth)** setup flow also uses the ChatGPT-specific copy action.
 
 ## What this does and does not do
 
