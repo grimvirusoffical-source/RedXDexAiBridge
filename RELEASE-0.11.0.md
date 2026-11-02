@@ -1,6 +1,6 @@
 # Red-XAI Bridge 0.11.0 — platform preview
 
-This candidate adds the red/black Windows installer with a native-progress X ring, a verified direct CLI download, independent terminal/crawler AI credentials, plugin recipes, a six-tier membership catalog, Axioms, account controls, and owner/admin pages.
+This candidate adds the red/black Windows installer with a native-progress X ring, a verified direct CLI download, independent terminal/crawler client credentials, plugin recipes, a six-tier membership catalog, Axioms, account controls, and owner/admin pages.
 
 Platform commerce is NOT enabled in the stable app. The production account-authority adapter, protected RedX credentials, verified owner subject/MFA linkage, published agreements, Stripe server credential and signed webhook deployment must pass integration readiness first. Sandbox catalog creation and isolated fixtures are not evidence of a production deployment. Existing v0.10.16 remains the stable login repair.
 
