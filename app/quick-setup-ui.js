@@ -10,14 +10,14 @@
  const text=(el,str)=>{el.textContent=String(str||'');};
  function renderError(target,error){text(target,'Setup did not complete: '+(error?.message||String(error)));}
  function setNameVisibility(){name.hidden=kind.value!=='generic';name.required=kind.value==='generic';name.value=kind.value==='generic'?name.value:'';}
- kind.addEventListener('change',()=>{secretText='';pendingRemote=false;remoteHelp='';copy.hidden=true;text(result,'');setNameVisibility()});
+ kind.addEventListener('change',()=>{secretText='';pendingRemote=false;remoteHelp='';copy.hidden=true;copy.textContent='Copy connection details';text(result,'');setNameVisibility()});
  function remoteChanged(status){
   if(!pendingRemote||kind.value!=='remote')return;
   if(status.phase==='online'&&status.url){
    pendingRemote=false;
    secretText='HTTPS MCP URL: '+status.url+'\n'+remoteHelp;
    text(result,'Remote endpoint verified. Connect your AI through OAuth and approve pairing in Bridge.\n\n'+secretText);
-   copy.hidden=false;
+   copy.textContent='Copy for ChatGPT';copy.hidden=false;
   }else if(status.phase==='unreachable')text(result,'Remote tunnel is running but its HTTPS endpoint is not reachable yet. '+(status.message||'Retrying automatically.'));
   else if(status.phase==='error'){pendingRemote=false;text(result,'Remote setup failed: '+(status.message||'Unable to connect.'));}
  }
@@ -65,7 +65,7 @@
  copy.addEventListener('click',async()=>{
   if(!secretText)return;
   copy.disabled=true;
-  try{await api.copy(secretText);copy.textContent='Copied — paste privately';}
+  try{if(kind.value==='remote'){await api.remoteChatGPTHandoff();copy.textContent='Copied — paste into ChatGPT';}else{await api.copy(secretText);copy.textContent='Copied — paste privately';}}
   catch(e){renderError(result,e);}
   finally{copy.disabled=false;}
  });
