@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 class InstallerThemeCapture {
+ const string ArtworkProperty="RedXInstallerThemeWindow",OwnerProperty="RedXInstallerThemeOwnerPID";
  delegate bool EnumProc(IntPtr window, IntPtr data);
  [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left,Top,Right,Bottom; }
  [StructLayout(LayoutKind.Sequential)] struct Point { public int X,Y; public Point(int x,int y){X=x;Y=y;} }
@@ -35,6 +36,34 @@ class InstallerThemeCapture {
  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window,int attribute,out Rect rect,int size);
  static int frameRetries,desktopFrames;
+ static uint WindowOwner(IntPtr window){uint owner;GetWindowThreadProcessId(window,out owner);return owner;}
+ static string ControlText(IntPtr window,int owner){var text=new StringBuilder(1024);if(window!=IntPtr.Zero&&IsWindow(window)&&WindowOwner(window)==(uint)owner)ReadControlText(window,0x000D,new IntPtr(text.Capacity),text);return text.ToString();}
+ static string InactivePage(Process process,IntPtr page,IntPtr status){
+   if(process.HasExited)return "fixture exited";
+   if(page==IntPtr.Zero||!IsWindow(page))return "installer page unavailable";
+   if(WindowOwner(page)!=(uint)process.Id)return "installer page no longer owned";
+   if(!IsWindowVisible(page))return "installer page hidden";
+   if(String.Equals(ControlText(status,process.Id).Trim(),"Completed",StringComparison.OrdinalIgnoreCase))return "installer page completed";
+   return null;
+ }
+ static bool BoundArtwork(IntPtr page,int installer,out IntPtr art,out uint owner){
+   art=IntPtr.Zero;owner=0;if(page==IntPtr.Zero||!IsWindow(page)||WindowOwner(page)!=(uint)installer)return false;
+   IntPtr registered=GetProp(page,ArtworkProperty);long pid=GetProp(page,OwnerProperty).ToInt64();
+   if(registered==IntPtr.Zero||pid<=0||pid>Int32.MaxValue||pid==installer||!IsWindow(registered)||GetParent(registered)!=page||WindowOwner(registered)!=(uint)pid)return false;
+   art=registered;owner=(uint)pid;return true;
+ }
+ static object ControlState(IntPtr window){
+   var name=new StringBuilder(256);if(window!=IntPtr.Zero)GetClassName(window,name,name.Capacity);
+   return new{handle="0x"+window.ToInt64().ToString("x"),exists=IsWindow(window),visible=IsWindowVisible(window),owner=WindowOwner(window),parent="0x"+GetParent(window).ToInt64().ToString("x"),className=name.ToString()};
+ }
+ static void RecordLifecycle(string directory,string reason,Process process,IntPtr window,IntPtr page,IntPtr progress,IntPtr status,IntPtr art,bool fallback,bool killed,string lastSample){
+   try{
+     bool exited=process==null||process.HasExited;IntPtr raw=GetProp(page,ArtworkProperty),rawOwner=GetProp(page,OwnerProperty);uint boundOwner;IntPtr bound;
+     bool registered=process!=null&&BoundArtwork(page,process.Id,out bound,out boundOwner);
+     var state=new{utc=DateTime.UtcNow.ToString("O"),reason=reason,fixtureProcess=process==null?0:process.Id,fixtureExited=exited,fixtureExitCode=exited&&process!=null?(int?)process.ExitCode:null,fallback=fallback,forcedDrawingTermination=killed,window=ControlState(window),page=ControlState(page),progress=ControlState(progress),status=ControlState(status),statusText=process==null?"":ControlText(status,process.Id),artwork=ControlState(art),registeredArtwork=ControlState(raw),registeredHelperPID=rawOwner.ToInt64(),boundArtwork=registered,lastGoodSample=lastSample};
+     File.AppendAllText(Path.Combine(directory,"control-lifecycle.jsonl"),new JavaScriptSerializer().Serialize(state)+Environment.NewLine);
+   }catch(Exception error){Console.Error.WriteLine("Could not record control predicates: "+error.Message);}
+ }
  static Bitmap CaptureDesktopArtwork(IntPtr art,IntPtr fixture,int owner){
    if(!Environment.UserInteractive||!IsWindowVisible(art)||GetAncestor(art,2)!=fixture)return null;
    uint fixtureOwner;GetWindowThreadProcessId(fixture,out fixtureOwner);if(fixtureOwner!=(uint)owner)return null;
@@ -154,7 +183,9 @@ class InstallerThemeCapture {
    if(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")!="true"||Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT")!="github-hosted"||(args.Length!=3&&args.Length!=4)) { Console.Error.WriteLine("CI runner only."); return 1; }
    bool fallback=args.Length==4&&args[3]=="fallback";
    bool terminate=args.Length==4&&args[3]=="terminate",requireArt=!fallback,helperKilled=false;
-   Process process=null;var helpers=new HashSet<int>();
+   Process process=null;var helpers=new HashSet<int>();var fallbackPositions=new HashSet<int>();var lines=new List<string>();
+   IntPtr observedWindow=IntPtr.Zero,observedPage=IntPtr.Zero,observedProgress=IntPtr.Zero,observedStatus=IntPtr.Zero,observedArt=IntPtr.Zero,lastPage=IntPtr.Zero;
+   int maxNative=-1,inactivePageSamples=0;string lastInactive=null;
    try {
      SetProcessDPIAware();
      var canonical=new Dictionary<string,int>();
@@ -164,7 +195,7 @@ class InstallerThemeCapture {
      start.EnvironmentVariables["REDX_INSTALLER_THEME_DIAGNOSTICS"]=Path.Combine(args[2],"drawing-helper.log");
      process=Process.Start(start);
      var positions=new HashSet<int>(); var frames=new HashSet<int>(); var statuses=new HashSet<string>();
-     int snapshots=0,samples=0,fallbackSamples=0; var lines=new List<string>(); var watch=Stopwatch.StartNew();
+     int snapshots=0,samples=0,fallbackSamples=0;var watch=Stopwatch.StartNew();
      while(!process.HasExited&&watch.ElapsedMilliseconds<20000) {
        IntPtr window=IntPtr.Zero;
        EnumWindows(delegate(IntPtr candidate,IntPtr ignored) { uint id; GetWindowThreadProcessId(candidate,out id); if(id==(uint)process.Id&&IsWindowVisible(candidate)){window=candidate;return false;}return true; },IntPtr.Zero);
@@ -172,27 +203,44 @@ class InstallerThemeCapture {
          IntPtr progress=IntPtr.Zero,art=IntPtr.Zero,status=IntPtr.Zero;
          EnumChildWindows(window,delegate(IntPtr child,IntPtr ignored) {
            int id=GetDlgCtrlID(child); if(id==1004)progress=child; if(id==1006)status=child;
-           // NativeWindow.AssignHandle may replace a zero child control ID.
-           // Resolve the window registered by the drawing owner instead.
-           IntPtr registered=GetProp(child,"RedXInstallerThemeWindow");if(registered!=IntPtr.Zero&&IsWindow(registered))art=registered;
            return true;
          },IntPtr.Zero);
-         if(progress!=IntPtr.Zero&&(fallback||(art!=IntPtr.Zero&&IsWindowVisible(art)))) {
+         IntPtr page=progress!=IntPtr.Zero?GetParent(progress):lastPage;uint registeredOwner;
+         if(page!=IntPtr.Zero&&IsWindow(page)&&WindowOwner(page)==(uint)process.Id&&GetAncestor(page,2)==window)lastPage=page;
+         BoundArtwork(page,process.Id,out art,out registeredOwner);
+         observedWindow=window;observedPage=page;observedProgress=progress;observedStatus=status;observedArt=art;
+         string inactive=InactivePage(process,page,status);
+         if(inactive==null&&(!IsWindowVisible(progress)||(fallback&&art!=IntPtr.Zero))){
+           // Native controls can disappear while MUI completes, before its
+           // process has exited. Recheck the page after a failing predicate.
+           inactive=InactivePage(process,page,status);
+           if(inactive==null)throw new Exception("Active installer page lost native fallback: progressVisible="+IsWindowVisible(progress)+", boundArtwork="+(art!=IntPtr.Zero)+".");
+         }
+         if(inactive!=null){
+           inactivePageSamples++;
+           if(inactive!=lastInactive)RecordLifecycle(args[2],inactive,process,window,page,progress,status,art,fallback,helperKilled,lines.Count==0?null:lines[lines.Count-1]);
+           lastInactive=inactive;
+         }else{
+           lastInactive=null;
+           if(!IsWindow(progress)||WindowOwner(progress)!=(uint)process.Id||GetParent(progress)!=page)throw new Exception("Native progress ownership changed on an active installer page.");
+           if(!fallback&&helpers.Count>0&&(art==IntPtr.Zero||!IsWindowVisible(art)))throw new Exception("Bound artwork disappeared from an active installer page.");
+         }
+         if(inactive==null&&progress!=IntPtr.Zero&&(fallback||(art!=IntPtr.Zero&&IsWindowVisible(art)))) {
            int low=SendMessage(progress,0x0407,new IntPtr(1),IntPtr.Zero).ToInt32(),high=SendMessage(progress,0x0407,IntPtr.Zero,IntPtr.Zero).ToInt32(),pos=SendMessage(progress,0x0408,IntPtr.Zero,IntPtr.Zero).ToInt32();
            int native=high>low?(pos-low)*100/(high-low):0,rendered=native;
-           if(fallback){if(!IsWindowVisible(progress)||art!=IntPtr.Zero)throw new Exception("Artwork failure did not retain the native progress bar.");fallbackSamples++;}
+           if(fallback){fallbackSamples++;fallbackPositions.Add(native);}
            else{
              var artClass=new StringBuilder(256);GetClassName(art,artClass,artClass.Capacity);Rect bounds;GetWindowRect(art,out bounds);
              if(!String.Equals(artClass.ToString(),"Static",StringComparison.OrdinalIgnoreCase)||bounds.Right-bounds.Left!=200||bounds.Bottom-bounds.Top!=232)throw new Exception("Registered artwork has an unexpected class or dimensions.");
              uint helper;GetWindowThreadProcessId(art,out helper);
-             if(helper==0||helper==(uint)process.Id)throw new Exception("Artwork must be owned by its separate drawing process.");
+             if(helper==0||helper==(uint)process.Id||helper!=registeredOwner||GetParent(art)!=page)throw new Exception("Artwork must remain bound to its registered drawing process and page.");
              helpers.Add((int)helper);
              // PrintWindow performs cross-process rendering; HBITMAP handles are process-private.
              using(var image=CaptureValidArtwork(art,window,process.Id,canonical,Path.Combine(args[2],"direct-canvas"),out rendered)){}
            }
-           var text=new StringBuilder(1024);ReadControlText(status,0x000D,new IntPtr(text.Capacity),text);
-           positions.Add(native);bool changed=frames.Add(rendered);statuses.Add(text.ToString());samples++;
-           lines.Add(native+","+rendered+","+text.ToString().Replace(","," "));
+           string text=ControlText(status,process.Id);
+           positions.Add(native);maxNative=Math.Max(maxNative,native);bool changed=frames.Add(rendered);statuses.Add(text);samples++;
+           lines.Add(native+","+rendered+","+text.Replace(","," "));
            File.WriteAllLines(Path.Combine(args[2],"native-progress.csv"),lines);
            if(native<0||native>100||(!fallback&&Math.Abs(native-rendered)>15))throw new Exception("Rendered ring "+rendered+" does not follow native NSIS progress "+native+" (range "+low+".."+high+", position "+pos+").");
            if(changed&&snapshots<4&&rendered>=snapshots*20) {
@@ -205,7 +253,8 @@ class InstallerThemeCapture {
            }
            if(terminate&&!helperKilled&&native>=40&&frames.Count>=3){
              uint ownedHelper;GetWindowThreadProcessId(art,out ownedHelper);
-             if(ownedHelper==0||ownedHelper==(uint)process.Id)throw new Exception("Refusing to terminate any process except the artwork owner.");
+             IntPtr killArt;uint killOwner;
+             if(!BoundArtwork(page,process.Id,out killArt,out killOwner)||killArt!=art||ownedHelper!=killOwner||ownedHelper==0||ownedHelper==(uint)process.Id)throw new Exception("Refusing to terminate any process except the bound artwork owner.");
              using(var helper=Process.GetProcessById((int)ownedHelper)){
                if(Path.GetFileName(helper.MainModule.FileName)!="redx-installer-theme.exe")throw new Exception("Unexpected artwork process identity.");
                helper.Kill();if(!helper.WaitForExit(2000))throw new Exception("Artwork test process did not terminate.");
@@ -220,12 +269,12 @@ class InstallerThemeCapture {
      foreach(int helperId in helpers){try{using(var helper=Process.GetProcessById(helperId))if(!helper.WaitForExit(2000))throw new Exception("Drawing helper outlived its installer window.");}catch(ArgumentException){}}
      File.WriteAllLines(Path.Combine(args[2],"native-progress.csv"),lines);
      bool extractionStatus=false;foreach(var statusText in statuses)if(statusText.Contains("fixture-"))extractionStatus=true;
-     if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient evidence: exit="+process.ExitCode+", samples="+samples+", frames="+frames.Count+", positions="+positions.Count+", statuses="+statuses.Count+", PNGs="+snapshots+", extraction="+extractionStatus+".");
+     if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||maxNative<95||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient evidence: exit="+process.ExitCode+", samples="+samples+", frames="+frames.Count+", positions="+positions.Count+", maxNative="+maxNative+", statuses="+statuses.Count+", PNGs="+snapshots+", extraction="+extractionStatus+".");
      if(requireArt&&helpers.Count!=1)throw new Exception("Expected exactly one isolated drawing helper.");
-     if(terminate&&(!helperKilled||fallbackSamples<3))throw new Exception("Insufficient progress evidence after forced artwork termination.");
-     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+",\"strictFrameCaptureRetries\":"+frameRetries+",\"actualDesktopFrameCaptures\":"+desktopFrames+"}");
+     if(terminate&&(!helperKilled||fallbackSamples<3||fallbackPositions.Count<3))throw new Exception("Insufficient progress evidence after forced artwork termination.");
+     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"fallbackPositions\":"+fallbackPositions.Count+",\"maxNativePosition\":"+maxNative+",\"inactivePageSamples\":"+inactivePageSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+",\"strictFrameCaptureRetries\":"+frameRetries+",\"actualDesktopFrameCaptures\":"+desktopFrames+"}");
      Console.WriteLine("Native installer theme captures and real progress checks passed.");return 0;
-   } catch(Exception error) {Console.Error.WriteLine(error.Message);File.WriteAllText(Path.Combine(args[2],"failure.txt"),error.ToString());return 1;}
+   } catch(Exception error) {RecordLifecycle(args[2],"failure: "+error.Message,process,observedWindow,observedPage,observedProgress,observedStatus,observedArt,fallback,helperKilled,lines.Count==0?null:lines[lines.Count-1]);Console.Error.WriteLine(error.Message);File.WriteAllText(Path.Combine(args[2],"failure.txt"),error.ToString());return 1;}
    finally {
      if(process!=null&&!process.HasExited){process.Kill();process.WaitForExit();}
      // On a failed assertion, give recorded artwork owners the same bounded
