@@ -241,3 +241,19 @@ jobs:
           export REDXDEX_AUTH_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-auth-smoke"
           ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-auth-smoke.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-auth-smoke.log"; exit 1; }
           node -e 'const r=require(process.env.REDXDEX_AUTH_SMOKE_OUTPUT+"/result.json");if(!r.gatewayLocked||!r.accountLocked||!r.privilegedIPCRejected||!r.quickButton||!r.manualForm)process.exit(1);'
+      - name: Upload macOS smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-mac-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}/bridge-mac-background.log
+            ${{ runner.temp }}/bridge-mac-background-smoke/result.json
+            ${{ runner.temp }}/bridge-mac-background-smoke/*.png
+            ${{ runner.temp }}/bridge-auth-smoke.log
+            ${{ runner.temp }}/bridge-auth-smoke/result.json
+            ${{ runner.temp }}/bridge-auth-smoke/*.png
+            verification/platform-ui/result.json
+            verification/platform-ui/*.png
+          if-no-files-found: warn
+          retention-days: 14
