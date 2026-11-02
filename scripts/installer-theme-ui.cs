@@ -79,7 +79,8 @@ class InstallerThemeUI {
      context=new ApplicationContext();
      // Start hidden so a cold CLR/native-message round trip cannot expose an
      // empty STATIC before its first verified progress frame is installed.
-     art=CreateWindowEx(0x08000000,"STATIC","",0x4400000E,204,0,200,232,page,IntPtr.Zero,GetModuleHandle(null),IntPtr.Zero);
+     // Leave the native page/header edge outside the bitmap's client surface.
+     art=CreateWindowEx(0x08000000,"STATIC","",0x4400000E,204,4,200,232,page,IntPtr.Zero,GetModuleHandle(null),IntPtr.Zero);
      if(art==IntPtr.Zero)throw new InvalidOperationException("Could not create artwork window.");
      window=new Artwork(art,context);if(!SetProp(page,Property,art))throw new InvalidOperationException("Could not register artwork lifetime.");
      Trace("artwork child created");
