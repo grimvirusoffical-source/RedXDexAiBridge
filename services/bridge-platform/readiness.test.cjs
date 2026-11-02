@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),{Readable}=require('node:stream');
-const {CHECKS,DETAILS,contentHash,reviewedLegal,createReadinessProbe}=require('./readiness.cjs'),{createHandler}=require('./http.cjs');
+const {CHECKS,DETAILS,validLegalVersion,contentHash,reviewedLegal,publicReadiness,createReadinessProbe}=require('./readiness.cjs'),{createHandler}=require('./http.cjs');
 function fixture(){
  const now=1700000000000,legal={version:'reviewed-fixture-v1',status:'approved',requiresReview:false,documents:['terms','privacy','agreement'].map(id=>({id,title:id,content:'Reviewed fixture document '+id})),businessDetails:Object.fromEntries(DETAILS.map(key=>[key,'Fixture reviewed detail']))};legal.review={approved:true,businessDetailsReviewed:true,version:legal.version,reviewedAtMs:now-1,contentSha256:contentHash(legal)};
  const evidence={verified:true,issuer:'https://red-xai.com',clientId:'bridge',appNumber:6,checkedAtMs:now,canonicalAccounts:true,mfa:true,reauthentication:true,sessionRevocation:true,moderation:true,recovery:true,freshLogin:true,bridgeMembershipDeletion:true,globalAccountDeletion:true,owners:[{sub:'owner.01',verified:true,mfaRequired:true}],deviceProof:true,legalAcceptance:true,legalVersion:legal.version,usageEnforcement:true,persistence:{namespace:'bridge-platform-v1',durableWrite:true,casConflict:true}};
@@ -15,6 +15,14 @@ test('readiness requires fresh canonical/MFA/owner/deletion, actual RedX and bil
 test('draft legal, unchecked business details and changed content cannot become ready through config flags',async()=>{
  for(const mutate of [f=>f.legal.requiresReview=true,f=>f.legal.status='draft',f=>delete f.legal.businessDetails.privacyContact,f=>f.legal.review.businessDetailsReviewed=false,f=>f.config.legalApproval.businessDetailsReviewed=false,f=>f.config.legalApproved=false,f=>f.legal.documents[0].content+=' changed',f=>f.config.legalApproval.version='old']){const f=fixture();mutate(f);assert.equal((await createReadinessProbe(f.options)()).checks.legalReviewed,false);}
  assert.equal(reviewedLegal(require('../../app/legal-content.cjs')),false);
+});
+test('reviewed legal and public readiness require the same nonempty bounded safe version',async()=>{
+ const ready={ready:true,billingMode:'live',checks:Object.fromEntries(CHECKS.map(key=>[key,true]))};
+ for(const version of ['v','bridge-2026.11_v1','A'.repeat(100)]){assert.equal(validLegalVersion(version),true);assert.equal(publicReadiness(ready,version).ready,true);}
+ for(const version of ['',undefined,null,17,{},[], ' ','v 1','v\n1','v/1','<version>','版本','.','-v','v'.repeat(101)]){
+  const f=fixture();if(version===undefined)delete f.legal.version;else f.legal.version=version;f.legal.review.version=version;f.legal.review.contentSha256=contentHash(f.legal);f.config.legalApproval=structuredClone(f.legal.review);f.evidence.legalVersion=version;f.platform.legalVersion=version;
+  assert.equal(validLegalVersion(version),false);assert.equal(reviewedLegal(f.legal),false);const published=publicReadiness(ready,version);assert.equal(published.ready,false);assert.equal(published.legalVersion,'');const probed=await createReadinessProbe(f.options)();assert.equal(probed.ready,false);assert.equal(probed.checks.legalReviewed,false);
+ }
 });
 test('readiness probe times out closed and coalesces concurrent public checks without state writes',async()=>{
  const f=fixture();let reads=0;f.store.load=async()=>{reads++;return{schema:1,key:f.store.recordKey,revision:1};};const probe=createReadinessProbe({...f.options,cacheMs:5000});const results=await Promise.all(Array.from({length:10},()=>probe()));assert.ok(results.every(value=>value.ready));assert.equal(reads,1);await probe();assert.equal(reads,1);

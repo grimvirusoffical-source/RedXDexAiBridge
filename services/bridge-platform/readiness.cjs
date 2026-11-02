@@ -2,15 +2,16 @@
 const crypto=require('node:crypto');
 const CHECKS=['accountAuthority','ownerBinding','ownerMfa','bridgeDeletion','globalDeletion','deviceProof','legalAcceptance','legalReviewed','usageEnforcement','stripeWebhook','redxPersistence'];
 const DETAILS=['legalName','supportContact','privacyContact','refundPolicy','cancellationPolicy','jurisdiction','retentionPeriods','subprocessors','internationalTransfers','rightsProcess'];
+const validLegalVersion=value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value);
 const contentHash=legal=>crypto.createHash('sha256').update(JSON.stringify({version:legal.version,documents:legal.documents,businessDetails:legal.businessDetails})).digest('hex');
 function reviewedLegal(legal,approval=legal?.review,now=Date.now()){
- if(!legal||legal.requiresReview!==false||!['approved','published'].includes(legal.status)||!Array.isArray(legal.documents)||legal.documents.length!==3||legal.documents.map(d=>d.id).join(',')!=='terms,privacy,agreement'||legal.documents.some(d=>typeof d.content!=='string'||!d.content.trim()))return false;
+ if(!legal||!validLegalVersion(legal.version)||legal.requiresReview!==false||!['approved','published'].includes(legal.status)||!Array.isArray(legal.documents)||legal.documents.length!==3||legal.documents.map(d=>d.id).join(',')!=='terms,privacy,agreement'||legal.documents.some(d=>typeof d.content!=='string'||!d.content.trim()))return false;
  if(DETAILS.some(key=>typeof legal.businessDetails?.[key]!=='string'||!legal.businessDetails[key].trim()||legal.businessDetails[key].length>8192))return false;
  return approval?.approved===true&&approval.businessDetailsReviewed===true&&approval.version===legal.version&&Number.isSafeInteger(approval.reviewedAtMs)&&approval.reviewedAtMs>0&&approval.reviewedAtMs<=now&&approval.contentSha256===contentHash(legal);
 }
 function publicReadiness(value={},legalVersion=''){
- const checks=Object.fromEntries(CHECKS.map(key=>[key,value.checks?.[key]===true])),billingMode=['live','sandbox'].includes(value.billingMode)?value.billingMode:'unconfigured';
- return{ready:value.ready===true&&billingMode==='live'&&CHECKS.every(key=>checks[key]),app:'bridge',issuer:'https://red-xai.com',billingMode,legalVersion:/^[A-Za-z0-9._-]{1,100}$/.test(legalVersion)?legalVersion:'',checks};
+ const checks=Object.fromEntries(CHECKS.map(key=>[key,value.checks?.[key]===true])),billingMode=['live','sandbox'].includes(value.billingMode)?value.billingMode:'unconfigured',versionValid=validLegalVersion(legalVersion);
+ return{ready:value.ready===true&&versionValid&&billingMode==='live'&&CHECKS.every(key=>checks[key]),app:'bridge',issuer:'https://red-xai.com',billingMode,legalVersion:versionValid?legalVersion:'',checks};
 }
 function createReadinessProbe({authority={},store,platform,billing,legal,config={},clientConfig={},now=Date.now,timeoutMs=3000,cacheMs=5000}={}){
  let cached=null,until=0,inflight=null,evaluation=null;
@@ -48,4 +49,4 @@ function createReadinessProbe({authority={},store,platform,billing,legal,config=
   try{cached=await inflight;until=now()+cacheMs;return structuredClone(cached);}finally{inflight=null;}
  };
 }
-module.exports={CHECKS,DETAILS,contentHash,reviewedLegal,publicReadiness,createReadinessProbe};
+module.exports={CHECKS,DETAILS,validLegalVersion,contentHash,reviewedLegal,publicReadiness,createReadinessProbe};

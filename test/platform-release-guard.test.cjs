@@ -16,3 +16,10 @@ test('stable release requires every current production capability and rejects sa
  await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:async()=>({ok:false,status:404})}),/unavailable/);
 });
 test('unreviewed current draft or changed business text blocks release before contacting production',async()=>{for(const documents of [legal,{...reviewed,requiresReview:true},{...reviewed,review:{...reviewed.review,businessDetailsReviewed:false}},{...reviewed,businessDetails:{...reviewed.businessDetails,retentionPeriods:''}}]){let contacted=false;await assert.rejects(checkPlatformReadiness({local:{required:true},documents,request:async()=>{contacted=true;return{ok:true,json:async()=>ready};}}),/reviewed and approved/);assert.equal(contacted,false);}});
+test('blank missing or malformed matching agreement versions cannot pass the local or remote release gate',async()=>{
+ for(const version of ['',undefined,null,17,' ','v\n1','v/1','<version>','v'.repeat(101)]){
+  const documents=structuredClone(reviewed);if(version===undefined)delete documents.version;else documents.version=version;documents.review.version=version;documents.review.contentSha256=contentHash(documents);let contacted=false;
+  await assert.rejects(checkPlatformReadiness({local:{required:true},documents,request:async()=>{contacted=true;return{ok:true,json:async()=>({...ready,legalVersion:version})};}}),/reviewed and approved/);assert.equal(contacted,false);
+  await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:request({...ready,legalVersion:version})}),/incomplete/);
+ }
+});
