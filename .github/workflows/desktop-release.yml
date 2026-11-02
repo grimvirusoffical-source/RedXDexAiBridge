@@ -38,6 +38,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb xdotool libgtk-3-0 libnss3 libasound2t64 libsecret-1-0 dbus-x11 libfuse2t64
       - run: npm ci --no-audit --no-fund
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: '3.12'
+      - name: Generate branded Windows installer assets
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install Pillow==11.3.0
+          python scripts/generate-installer-theme.py
       - run: npm run check
       - run: npm run prepare:native
       - run: npm run prepare:tunnel
@@ -92,7 +101,11 @@ jobs:
       - name: Linux sign-in button interaction regression
         if: runner.os == 'Linux'
         run: xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron scripts/login-interaction-smoke.cjs --no-sandbox
+      - name: Verify direct CLI download from the published public release
+        if: runner.os == 'Windows'
+        run: node scripts/cli-download-live-smoke.cjs
       - name: Build Windows installer
+        id: windows-package
         if: runner.os == 'Windows'
         run: npm run package:win
         env:
@@ -113,6 +126,16 @@ jobs:
         env:
           BRIDGE_TEST_ASAR: ${{ github.workspace }}/dist/linux-unpacked/resources/app.asar
         run: xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron scripts/login-interaction-smoke.cjs --no-sandbox
+      - name: Install Windows release silently and verify installed login and native helper
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: ./scripts/installer-silent-smoke.ps1
+      - name: Capture Windows installer theme and compare it with native progress
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows-package.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: ./scripts/installer-theme-smoke.ps1
       - name: Hash release artifacts
         run: node scripts/check-artifacts.cjs
       - uses: actions/upload-artifact@v4

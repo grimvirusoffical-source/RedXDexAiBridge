@@ -107,6 +107,6 @@ api.on('startup:warning',message=>toast(message,true));
 // Red-XAI account is separate from each AI's device OAuth and tool permissions.
 api.accountStatus().then(a=>{const subject=a.account?.email||a.account?.sub||'Red-XAI account';$('account-name').textContent='Signed in as '+subject+' · Red-XAI application #6';}).catch(e=>toast(e.message,true));
 $('account-signout').onclick=()=>attempt(async()=>{if(!confirm('Sign out of Red-XAI Bridge? Active MCP connections and managed processes will stop.'))return;await api.accountLogout();});
-$('cli-download').onclick=()=>attempt(async()=>{await api.cliDownload();toast('Opened Red-XAI CLI release listing. A verified installer must be published before installing.');});
+$('cli-download').onclick=()=>attempt(async()=>{const r=await api.cliDownload();if(!r.cancelled)toast(r.message);});
 // Open only named, fixed product resources through the main process.
 document.querySelectorAll('[data-resource]').forEach(button=>button.onclick=()=>attempt(()=>api.openResource(button.dataset.resource)));
