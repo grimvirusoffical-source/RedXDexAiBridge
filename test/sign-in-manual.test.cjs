@@ -18,6 +18,12 @@ test('manual login clears the password on failure and shows the sanitized status
  reject(Error('Red-XAI manual sign-in could not complete (HTTP 401).'));await settle();
  assert.match(u.el('status').textContent,/HTTP 401/);assert.equal(u.el('password').value,'');assert.equal(u.buttons[0].disabled,false);
 });
+test('server-completed password-only sign-in continues without showing the MFA form',async()=>{
+ const u=ui({accountManualLogin:async()=>({signedIn:true})});
+ u.el('username').value='fixture-user';u.el('password').value='Fixture-password!';u.submit('manual-form');
+ assert.equal(u.el('password').value,'');await settle();
+ assert.equal(u.el('twofactor-form').hidden,true);assert.match(u.el('status').textContent,/Signed in/);
+});
 test('phone MFA presents an explicit call action and clears formatted code before IPC',async()=>{
  let calls=0,verified;const u=ui({accountManualCall:async()=>{calls++;return{sent:true};},accountManual2fa:async(code,method)=>{verified={code,method};return{signedIn:true};}});
  u.el('password').value='Fixture-password!';u.submit('manual-form');await settle();

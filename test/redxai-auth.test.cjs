@@ -10,7 +10,7 @@ function fixture(options={}){
   hits.push({url,...opts});assert.match(url,/^https:\/\/red-xai\.com\/api\/accounts\//);
   assert.equal(opts.credentials,'omit');assert.equal(opts.redirect,'error');assert.equal(opts.headers.origin,'https://red-xai.com');
   if(options.request){const response=await options.request(url,opts);if(response)return response;}
-  if(url.endsWith('/login'))return json(options.login||{next:'2fa',token:FLOW,methods:{totp:true,call:true}});
+  if(url.endsWith('/login')){const r=json(options.login||{next:'2fa',token:FLOW,methods:{totp:true,call:true}});for(const c of options.loginCookies||[])r.headers.append('set-cookie','redx_session='+c);return r;}
   if(url.endsWith('/login/call'))return json({phone:'private-account-phone',message:'private-service-message'});
   if(url.endsWith('/login/2fa')){method=JSON.parse(opts.body).method;const r=json({});for(const c of options.cookies||[COOKIE+COOKIE_ATTRS+'; Max-Age=600'])r.headers.append('set-cookie','redx_session='+c);return r;}
   if(url.endsWith('/me'))return json(options.profile?options.profile():{account:{id:'account-123',email:'test@red-xai.com'},amr:['pwd',method==='totp'?'otp':'call'],expiresMs:BASE+3600000});
@@ -141,11 +141,58 @@ test('unsafe or absent authenticated cookies never unlock the app',async t=>{
   const r=json({});Object.defineProperty(r,'headers',{value:{getSetCookie:()=>['redx_session='+COOKIE+COOKIE_ATTRS+'\r\nX-Bad: value']}});return r;
  }});await newline.login();await assert.rejects(newline.finish(),/cookie/);
 });
-test('canonical sign-in rejects MFA setup, legacy methods and password-only success',async t=>{
+test('canonical sign-in rejects MFA setup, legacy methods and body-token-only success',async t=>{
  for(const login of [{next:'2fa_setup',token:FLOW,methods:{totp:true}},
-  {next:'2fa',token:FLOW,methods:['totp']},{token:COOKIE},{next:'2fa',token:FLOW,methods:{sms:true}}])await t.test(login.next||'no second factor',async()=>{
+  {next:'2fa',token:FLOW,methods:['totp']},{token:COOKIE}])await t.test(login.next||'no second factor',async()=>{
   const f=fixture({login});await assert.rejects(f.login(),/setup|challenge|2FA/);assert.equal(f.a.isSignedIn(),false);
  });
+});
+test('MFA method hints match public truthiness and its call fallback without wire aliases',async t=>{
+ for(const [methods,expected]of [[{totp:1,call:'available'},['totp','call']], [{totp:'enabled',call:0},['totp']],
+  [{totp:false,call:1},['call']],[{totp:0,call:0},['call']],[{},['call']],[{app:true,sms:true},['call']]])await t.test(JSON.stringify(methods),async()=>{
+  const f=fixture({login:{next:'2fa',token:FLOW,methods}});assert.deepEqual(await f.login(),{requires2fa:true,methods:expected});
+  assert.equal(f.a.isSignedIn(),false);assert.equal(f.saved(),'');
+  if(expected[0]==='call'){await f.a.manualCall();await f.a.manual2fa('123456','call');}else await f.finish();
+  const posted=JSON.parse(f.hits.find(hit=>hit.url.endsWith('/login/2fa')).body);assert.equal(posted.method,expected[0]);
+ });
+});
+test('server-completed password-only login requires a fresh cookie and pwd profile, and restores the same subject',async()=>{
+ const profile=()=>({account:{id:'account-123'},amr:['pwd'],expiresMs:BASE+3600000});
+ const f=fixture({login:{},loginCookies:[COOKIE+COOKIE_ATTRS+'; Max-Age=600'],profile});
+ assert.equal((await f.login()).signedIn,true);assert.equal(f.a.session.method,'password');
+ assert.equal(f.a.session.expiresAt,BASE+60000);assert.equal(f.hits.some(hit=>hit.url.endsWith('/login/2fa')||hit.url.endsWith('/login/call')),false);
+ assert.equal(f.a.status().awaiting2fa,false);assert.equal(JSON.parse(f.saved()).method,'password');
+ const restored=new RedXAIAccount({now:f.now,request:f.request,load:async()=>f.saved()});assert.equal(await restored.restore(),true);
+ assert.equal(restored.session.sub,'account-123');assert.equal(restored.session.method,'password');
+ const wrongSubject=new RedXAIAccount({now:f.now,load:async()=>f.saved(),request:async()=>json({account:{id:'different-account'},amr:['pwd'],expiresMs:BASE+3600000})});
+ assert.equal(await wrongSubject.restore(),false);
+ const transient=fixture({login:{next:null},loginCookies:[COOKIE+COOKIE_ATTRS],profile});assert.equal((await transient.login()).signedIn,true);assert.equal(transient.saved(),'');
+});
+test('password-only completion cannot bypass a challenge, unsupported state, missing cookie or invalid account',async t=>{
+ const profile=()=>({account:{id:'account-123'},amr:['pwd'],expiresMs:BASE+3600000}),cookies=[COOKIE+COOKIE_ATTRS+'; Max-Age=600'];
+ const challenge=fixture({login:{next:'2fa',token:FLOW,methods:{totp:1,call:1}},loginCookies:cookies,profile});
+ assert.equal((await challenge.login()).requires2fa,true);assert.equal(challenge.a.isSignedIn(),false);assert.equal(challenge.hits.some(hit=>hit.url.endsWith('/me')),false);
+ for(const login of [{next:'2fa_setup',token:FLOW,methods:{totp:1}},{next:'unexpected'}, {token:FLOW}, {challenge:FLOW}, {pending:['2fa']}])await t.test(JSON.stringify(login),async()=>{
+  const f=fixture({login,loginCookies:cookies,profile});await assert.rejects(f.login(),/setup|challenge/);assert.equal(f.a.isSignedIn(),false);assert.equal(f.saved(),'');
+ });
+ const missing=fixture({login:{},profile});await assert.rejects(missing.login(),/fresh authenticated session cookie/);assert.equal(missing.a.isSignedIn(),false);
+ for(const body of [{account:{id:'account-123'},amr:[],expiresMs:BASE+3600000},
+  {account:{id:'account-123',disabled:true},amr:['pwd'],expiresMs:BASE+3600000},
+  {account:{id:'account-123'},amr:['pwd'],expiresMs:BASE+3600000,pending:['2fa']},
+  {account:{id:'account-123'},amr:['pwd'],expiresMs:BASE}])await t.test(JSON.stringify(body),async()=>{
+  const f=fixture({login:{},loginCookies:cookies,profile:()=>body});await assert.rejects(f.login(),/verify|eligible/);assert.equal(f.a.isSignedIn(),false);assert.equal(f.saved(),'');
+ });
+});
+test('password-only completion rejects explicit failure and unresolved MFA signals before account activation',async t=>{
+ const profile=()=>({account:{id:'account-123'},amr:['pwd'],expiresMs:BASE+3600000}),loginCookies=[COOKIE+COOKIE_ATTRS+'; Max-Age=600'];
+ for(const login of [{ok:false},{success:false},{error:'sign-in failed'},{error:{code:'verification_required'}},
+  {requires2fa:true},{requires2fa:0},{requires2fa:null},{requires2faSetup:''},{requires2faSetup:[]},
+  {twoFactorRequired:'false'},{twoFactorRequired:true}])await t.test(JSON.stringify(login),async()=>{
+  const f=fixture({login,loginCookies,profile});await assert.rejects(f.login(),/unfinished sign-in challenge/);
+  assert.equal(f.a.isSignedIn(),false);assert.equal(f.saved(),'');assert.equal(f.hits.some(hit=>hit.url.endsWith('/me')),false);
+ });
+ const completed=fixture({login:{ok:true,success:true,error:'',requires2fa:false,requires2faSetup:false,twoFactorRequired:false},loginCookies,profile});
+ assert.equal((await completed.login()).signedIn,true);assert.equal(completed.a.session.method,'password');
 });
 test('identity must confirm password plus selected factor and future server expiry',async t=>{
  const valid={account:{id:'account-123'},amr:['pwd','otp'],expiresMs:BASE+3600000};
