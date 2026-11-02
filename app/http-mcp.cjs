@@ -3,7 +3,7 @@ const http=require('node:http'),crypto=require('node:crypto');
 const {dispatch}=require('./protocol.cjs');
 function isAuthorized(header,token){if(typeof header!=='string'||!header.startsWith('Bearer '))return false;const a=Buffer.from(header.slice(7)),b=Buffer.from(token);return a.length===b.length&&crypto.timingSafeEqual(a,b);}
 async function body(req,limit=1048576){let size=0,chunks=[];for await(const c of req){size+=c.length;if(size>limit)throw Object.assign(Error('Request too large'),{status:413});chunks.push(c);}return Buffer.concat(chunks).toString('utf8');}
-function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',port=0,onCall=()=>{}}={}){
+function startServer({token,clients,oauth,isOperational=()=>true,contextFor=()=>({}),host='127.0.0.1',port=0,onCall=()=>{}}={}){
  if(!['127.0.0.1','::1'].includes(host))throw Error('Refusing to bind MCP to non-loopback address');
  if(!clients&&!token)token=crypto.randomBytes(32).toString('base64url');
  let active=0,discoveryActive=0;const activeClients=new Map();
@@ -12,6 +12,7 @@ function startServer({token,clients,oauth,contextFor=()=>({}),host='127.0.0.1',p
   res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   try{
+   if(!isOperational())return json(423,{error:'Red-XAI account sign-in required before using MCP'});
    const url=new URL(req.url,'http://127.0.0.1'),pathname=url.pathname;
    const expected=new Set(['127.0.0.1','localhost','[::1]']);if(oauth?.origin)expected.add(new URL(oauth.origin).hostname);
    let requestHost;try{requestHost=new URL('http://'+req.headers.host).hostname;}catch{}if(!expected.has(requestHost))return json(403,{error:'Invalid Host'});

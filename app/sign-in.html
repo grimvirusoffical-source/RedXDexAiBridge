@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Red-XAI Bridge — Sign in</title>
+<link rel="stylesheet" href="sign-in.css">
+<script defer src="sign-in.js"></script>
+</head>
+<body>
+<main class="shell">
+  <section class="identity">
+    <div class="brand"><div class="logo">X</div><span>RED-XAI <strong>BRIDGE</strong></span></div>
+    <div class="eyebrow">YOUR DEVICE. YOUR PERMISSIONS.</div>
+    <h1>Connect securely.<br><em>Stay in control.</em></h1>
+    <p>Sign in with your existing Red-XAI account to unlock this Bridge. Every connected MCP client still needs its own OAuth pairing and device permissions.</p>
+    <div class="security"><span class="green-dot"></span> Local computer tools are locked until sign-in succeeds.</div>
+    <div class="tiles"><div><b>01</b><span>Verify your account</span></div><div><b>02</b><span>Approve this device</span></div><div><b>03</b><span>Choose MCP permissions</span></div></div>
+    <div class="foot">Red-XAI LLC · Bridge app ID 6</div>
+  </section>
+  <section class="login">
+    <div class="panel">
+      <h2>Welcome back</h2>
+      <p class="hint">One Red-XAI account. Your existing clients and settings stay on this computer.</p>
+      <button id="quick-start" class="primary wide">Sign in with Red-XAI Quick Login</button>
+      <div id="quick-pending" class="pending" hidden>
+        <p>In your browser, verify this code and approve Red-XAI Bridge:</p>
+        <div id="quick-code" class="code" aria-live="polite"></div>
+        <div class="actions">
+          <button id="quick-open" class="outline" type="button">Open approval page</button>
+          <button id="quick-cancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </div>
+      <div class="separator"><span>or sign in manually</span></div>
+      <form id="manual-form">
+        <label for="username">Email or username</label>
+        <input id="username" name="username" autocomplete="username" maxlength="254" required spellcheck="false">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button class="outline wide" type="submit">Sign in with password</button>
+      </form>
+      <form id="twofactor-form" hidden>
+        <label for="twofactor-method">Verification method</label>
+        <select id="twofactor-method"></select>
+        <label for="twofactor-code">Verification code</label>
+        <input id="twofactor-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4,10}" maxlength="10" required>
+        <div class="actions"><button class="primary" type="submit">Verify &amp; continue</button><button class="ghost" id="twofactor-back" type="button">Back</button></div>
+      </form>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="links">
+        <button class="link" id="create-account" type="button">Create Red-XAI account</button>
+        <button class="link" id="get-cli" type="button">Red-XAI CLI (developer tools)</button><button class="link" id="login-update-check" type="button">Check Bridge updates</button><button class="link" id="login-update-download" type="button" hidden>Download update</button><button class="link" id="login-update-install" type="button" hidden>Restart &amp; install</button>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

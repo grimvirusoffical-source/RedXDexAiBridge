@@ -6,12 +6,19 @@ const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImag
 if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!process.env.REDXDEX_SMOKE_OUTPUT))throw Error('Self-test requires isolated data and output folders');
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
-let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,quitting=false;const activity=[];
+const {RedXAIAccount}=require('./redxai-auth.cjs');
+const {validateRemoteConfig}=require('./tunnel-modes.cjs');
+let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,accountAuth,quitting=false;const activity=[];
 let lastNotifiedHandoffUrl=null;
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
+const LOGIN_UI=pathToFileURL(path.join(__dirname,'sign-in.html')).href;
+const CI_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_SMOKE_OUTPUT;
+const AUTH_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_AUTH_SMOKE_OUTPUT;
+const PUBLIC_IPC=new Set(['account:status','account:quick:start','account:quick:open','account:quick:poll','account:quick:cancel','account:manual:login','account:manual:2fa','account:logout','account:signup','cli:download','app:version','updates:status','app:updates','updates:download','updates:install']);
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
 app.setName('RedXDexAiBridge');
 if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))app.setPath('userData',path.join(process.env.REDXDEX_SMOKE_OUTPUT,'userData'));
+if(AUTH_SMOKE)app.setPath('userData',path.join(process.env.REDXDEX_AUTH_SMOKE_OUTPUT,'userData'));
 if(process.argv.includes('--vortex-diagnostic')){
  app.whenReady().then(async()=>{
   const result=await require('./vortex-diagnostic.cjs').run({app,safeStorage,root:core.root,argv:process.argv});
@@ -37,10 +44,42 @@ if(process.argv.includes('--vortex-diagnostic')){
  function secure(){if(!safeStorage.isEncryptionAvailable()||safeStorage.getSelectedStorageBackend?.()==='basic_text')throw Error('Secure OS credential storage is unavailable');}
  function readSecret(name){secure();const p=secretFile(name);return fs.existsSync(p)?safeStorage.decryptString(fs.readFileSync(p)):'';}
  function saveSecret(name,value){secure();fs.mkdirSync(app.getPath('userData'),{recursive:true,mode:0o700});const f=secretFile(name),tmp=f+'.'+crypto.randomUUID();try{fs.writeFileSync(tmp,safeStorage.encryptString(value),{mode:0o600,flag:'wx'});atomicRename(tmp,f);}finally{try{fs.unlinkSync(tmp);}catch{}}}
- function ipc(name,fn){ipcMain.handle(name,(e,...args)=>{if(!win||e.sender!==win.webContents||e.senderFrame!==win.webContents.mainFrame||e.senderFrame.url!==UI)throw Error('Untrusted IPC sender');return fn(...args);});}
+ function ipc(name,fn){ipcMain.handle(name,async(e,...args)=>{
+  const page=e.senderFrame?.url;
+  if(!win||e.sender!==win.webContents||e.senderFrame!==win.webContents.mainFrame||![UI,LOGIN_UI].includes(page))throw Error('Untrusted IPC sender');
+  if(page===LOGIN_UI&&!PUBLIC_IPC.has(name))throw Error('Sign in before using Bridge');
+  if(!CI_SMOKE&&!PUBLIC_IPC.has(name))await accountAuth.ensure();
+  return fn(...args);
+ });}
  function defaultClient(id){const s=core.settings();s.clientPolicies[id]=Object.fromEntries(Object.keys(s.permissions).map(k=>[k,'ask']));core.saveSettings(s);emit('clients',clients.list());}
- function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
- async function startGateway(){if(gateway)return {running:true,url:gateway.url};gateway=await startServer({clients,oauth,contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});return {running:true,url:gateway.url};}
+ function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,account:accountAuth.status(),gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
+ async function startGateway(){
+  if(!CI_SMOKE&&!accountAuth.isSignedIn())throw Error('Sign in to Red-XAI before starting MCP');
+  if(gateway)return {running:true,url:gateway.url};
+  gateway=await startServer({clients,oauth,port:tunnel?.config()?.mode==='named'?tunnel.config().localPort:0,isOperational:()=>CI_SMOKE||accountAuth.isSignedIn(),
+   contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id)&&(CI_SMOKE||accountAuth.isSignedIn()),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});
+  atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});
+  return {running:true,url:gateway.url};
+ }
+ async function shutDownGateway(){
+  tunnel.stop();approvals.cancelAll('Red-XAI sign-out');core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();
+  const old=gateway;gateway=null;
+  if(old){old.server.closeAllConnections?.();await old.stop().catch(()=>{});}
+  try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}
+ }
+ async function showLogin(){
+  accountAuth.session=null;accountAuth.emit();
+  await shutDownGateway();
+  if(!win.isDestroyed()&&win.webContents.getURL()!==LOGIN_UI)await win.loadFile(path.join(__dirname,'sign-in.html'));
+  win.show();
+ }
+ async function openAfterLogin(){
+  if(!accountAuth.isSignedIn())throw Error('Red-XAI account is not verified');
+  await startGateway();
+  if(win.webContents.getURL()!==UI)await win.loadFile(path.join(__dirname,'index.html'));
+  if(remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
+  return accountAuth.status();
+ }
  function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
  function remoteAutoConnect(){return require('./remote-preferences.cjs').enabled(core.root);}
  function rememberRemote(enabled){require('./remote-preferences.cjs').remember(core.root,enabled);}
@@ -55,6 +94,19 @@ if(process.argv.includes('--vortex-diagnostic')){
   clients=new ClientStore(path.join(core.root,'clients.json'));
   approvals=new ApprovalQueue({emit:items=>{emit('approvals',items);if(items.length){app.dock?.bounce('informational');}}});
   oauth=new OAuthService({file:path.join(core.root,'oauth.json'),clients,approvals,onClient:defaultClient});
+   accountAuth=new RedXAIAccount({
+    load:async()=>readSecret('redxai-account-session'),
+    save:async value=>saveSecret('redxai-account-session',value),
+    clear:async()=>{try{fs.unlinkSync(secretFile('redxai-account-session'));}catch(e){if(e.code!=='ENOENT')throw e;}},
+    beforeActivate:async identity=>{
+     const ownerFile=path.join(core.root,'redxai-device-owner.json');
+     const owner=fs.existsSync(ownerFile)?JSON.parse(fs.readFileSync(ownerFile,'utf8')).sub:'';
+     if(owner&&owner!==identity.sub)throw Error('This computer is enrolled to another Red-XAI account. An approved device reset is required before switching users.');
+     if(!owner)atomicJSON(ownerFile,{sub:identity.sub,appId:6});
+    },
+    onChange:value=>emit('account:state',value)
+   });
+   if(!CI_SMOKE)await accountAuth.restore();
   tunnel=new Tunnel(s=>{
    if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;
    atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);
@@ -74,15 +126,23 @@ if(process.argv.includes('--vortex-diagnostic')){
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
-  win=new BrowserWindow({show:!core.settings().startHidden,...require('./window-layout.cjs').windowLayout(require('electron').screen.getPrimaryDisplay().workArea),title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
-  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==UI)e.preventDefault();});win.setMenuBarVisibility(false);
+  win=new BrowserWindow({show:!core.settings().startHidden||(!CI_SMOKE&&!accountAuth.isSignedIn()),...require('./window-layout.cjs').windowLayout(require('electron').screen.getPrimaryDisplay().workArea),title:'Red-XAI Bridge',icon:path.join(__dirname,'assets','bridge-icon.png'),backgroundColor:'#101219',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(__dirname,'preload.cjs')}});
+  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',(e,url)=>{if(url!==UI&&url!==LOGIN_UI)e.preventDefault();});win.setMenuBarVisibility(false);
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
   tray=new Tray(icon);if(process.platform==='darwin')tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
-  await startGateway();
+  if(CI_SMOKE||accountAuth.isSignedIn())await startGateway();
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
-  await win.loadFile(path.join(__dirname,'index.html'));
+   await win.loadFile(path.join(__dirname,(CI_SMOKE||accountAuth.isSignedIn())?'index.html':'sign-in.html'));
+  if(AUTH_SMOKE){
+   const result=await win.webContents.executeJavaScript("(async()=>({title:document.title,quickButton:!!document.getElementById('quick-start'),manualForm:!!document.getElementById('manual-form'),sourceFile:location.pathname,privilegedIPCRejected:await window.bridge.snapshot().then(()=>false,()=>true)}))()");
+   result.gatewayLocked=!gateway&&!fs.existsSync(path.join(core.root,'runtime.json'));
+   result.accountLocked=!accountAuth.isSignedIn();
+   const out=process.env.REDXDEX_AUTH_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(result,null,2));
+   if(!result.gatewayLocked||!result.accountLocked||!result.quickButton||!result.manualForm||!result.privilegedIPCRejected)throw Error('Red-XAI authentication gate smoke failed');
+   quitting=true;app.exit(0);return;
+  }
   // DMG, AppImage and Debian packages cannot provide the interactive NSIS optional-tools page.
   // Offer a first-run explanation without installing system packages or bypassing consent.
   if(app.isPackaged&&process.platform!=='win32'&&!process.env.REDXDEX_SMOKE_OUTPUT&&win.isVisible()){
@@ -140,13 +200,35 @@ if(process.argv.includes('--vortex-diagnostic')){
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
    quitting=true;app.exit(0);return;
   }
-  if(process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
-  if(process.argv.includes('--connect-remote')||tunnel.config()?.autoConnect===true||remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
+  if((CI_SMOKE||accountAuth.isSignedIn())&&process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
+  if(gateway&&(process.argv.includes('--connect-remote')||remoteAutoConnect()))tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
+   if(!CI_SMOKE){
+    const interval=setInterval(async()=>{
+     if(!accountAuth.session||!gateway)return;
+     try{
+      if(Date.now()-(accountAuth.lastRevalidation||0)>60000){
+       await accountAuth.refresh();
+       accountAuth.lastRevalidation=Date.now();
+      }
+      await accountAuth.ensure();
+     }catch{await showLogin().catch(()=>{});}
+    },30000);interval.unref?.();
+   }
   if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true);}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
   const timer=setTimeout(()=>checkUpdates().catch(e=>emit('updates:state',{...updateController.status(),message:e.message})),15000);timer.unref();
   const interval=setInterval(()=>checkUpdates().catch(()=>{}),6*3600000);interval.unref();
  }).catch(e=>{if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.writeFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'error.txt'),e.stack||e.message);console.error(e.stack||e.message);quitting=true;app.exit(1);return;}else dialog.showErrorBox('RedXDexAiBridge could not start',e.message);quitting=true;app.quit();});
- ipc('snapshot',()=>runtime());
+   ipc('account:status',()=>CI_SMOKE?{signedIn:true,appNumber:6,account:{sub:'ci-fixture',provider:'smoke'}}:accountAuth.status());
+  ipc('account:quick:start',()=>accountAuth.quickStart());
+  ipc('account:quick:open',()=>shell.openExternal(accountAuth.quickLink()));
+  ipc('account:quick:poll',async()=>{const r=await accountAuth.quickPoll();if(r.signedIn)await openAfterLogin();return r;});
+  ipc('account:quick:cancel',()=>accountAuth.cancelQuick());
+  ipc('account:manual:login',async(login,password)=>{const r=await accountAuth.manualLogin(login,password);if(r.signedIn)await openAfterLogin();return r;});
+  ipc('account:manual:2fa',async(code,method)=>{const r=await accountAuth.manual2fa(code,method);if(r.signedIn)await openAfterLogin();return r;});
+  ipc('account:logout',async()=>{await shutDownGateway();await accountAuth.logout();await win.loadFile(path.join(__dirname,'sign-in.html'));return {signedIn:false};});
+  ipc('account:signup',()=>shell.openExternal('https://red-xai.com/signup'));
+  ipc('cli:download',()=>shell.openExternal('https://github.com/grimvirusoffical-source/red-xai-installers/releases'));
+  ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
  ipc('stop:all',()=>stopEverything());
@@ -211,7 +293,17 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('setup:diagnostics',async()=>{await startGateway();const spec=clientSpec('Diagnostics');const proc=cp.spawn(spec.command,spec.args,{env:{...process.env,...spec.env},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{proc.kill();reject(Error('MCP diagnostic timed out'));},5000);proc.stdout.on('data',b=>stdout+=b);proc.stderr.on('data',b=>stderr+=b);proc.on('error',e=>{clearTimeout(timer);reject(e);});proc.on('close',()=>{clearTimeout(timer);try{const r=JSON.parse(stdout.trim().split('\n')[0]);if(!r.result?.serverInfo)throw Error(r.error?.message||stderr||'MCP handshake failed');resolve({ok:true,version:r.result.serverInfo.version});}catch(e){reject(e);}});proc.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Diagnostics',version:'1'}}})+'\n');});});
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
  ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();core.crawlJobs.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
- ipc('remote:start',async()=>{await startGateway();const status=await tunnel.start(gateway.url);if(status.phase!=='error')rememberRemote(true);return status;});
+ ipc('remote:mode:read',()=>tunnel.config()||{mode:'temporary',autoConnect:remoteAutoConnect()});
+ ipc('remote:mode:save',cfg=>{
+   const next=validateRemoteConfig(cfg);
+   if(!['named','local','temporary'].includes(next.mode))throw Error('Configure existing VPS relays separately');
+   if(next.mode==='named'&&!fs.statSync(next.configFile).isFile())throw Error('Cloudflare YAML configuration not found');
+   const file=path.join(core.root,'remote.json');
+   if(fs.existsSync(file))fs.copyFileSync(file,path.join(core.root,'remote-backup-'+Date.now()+'.json'),fs.constants.COPYFILE_EXCL);
+   atomicJSON(file,next);rememberRemote(next.autoConnect);
+   return {saved:true,mode:next.mode,message:'Tunnel mode saved. Restart Bridge to activate it. Existing connections are unchanged until restart.'};
+ });
+ ipc('remote:start',async()=>{await startGateway();const status=await tunnel.start(gateway.url);if(status.phase!=='error'&&status.mode!=='local')rememberRemote(true);return status;});
  ipc('remote:stop',()=>{rememberRemote(false);return tunnel.stop();});
  ipc('remote:chatgpt-handoff',()=>{
   const message=require('./chatgpt-handoff.cjs').instructionsForChatGPT(tunnel.status());
@@ -227,6 +319,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  });
  ipc('tool:interactive',(name,args)=>core.perform(name,args,{clientId:'desktop',interactive:true}));
  ipc('clipboard:write',text=>{if(typeof text!=='string'||text.length>65536)throw Error('Invalid clipboard text');clipboard.writeText(text);return true;});
+ ipc('resource:open',key=>{const resources={website:'https://red-xai.com',releases:'https://github.com/grimvirusoffical-source/RedXDexAiBridge/releases',source:'https://github.com/grimvirusoffical-source/RedXDexAiBridge',issues:'https://github.com/grimvirusoffical-source/RedXDexAiBridge/issues'};if(!Object.hasOwn(resources,key))throw Error('Unknown resource');return shell.openExternal(resources[key]);});
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));

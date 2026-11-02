@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const cp = require('node:child_process');
 const {findExecutable}=require('./platform.cjs');
+const {validateRemoteConfig,namedTunnelArguments}=require('./tunnel-modes.cjs');
 
 function validateRelay(value) {
   if (!value || value.mode !== 'ssh') throw Error('Unsupported relay configuration');
@@ -61,7 +62,7 @@ class Tunnel {
   }
   config() {
     const file = path.join(this.root, 'remote.json');
-    return fs.existsSync(file) ? validateRelay(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
+    return fs.existsSync(file) ? validateRemoteConfig(JSON.parse(fs.readFileSync(file, 'utf8'))) : null;
   }
   status() { return {...this.state}; }
   set(value) { this.state = {...this.state, ...value}; this.emit(this.status()); }
@@ -71,10 +72,16 @@ class Tunnel {
     if (upstream.protocol !== 'http:' || upstream.hostname !== '127.0.0.1' || !upstream.port || upstream.username || upstream.password) throw Error('Tunnel upstream must be loopback');
     this.configValue = this.config();
     this.probeFailures = 0;
-    if (this.configValue) {
+    if (this.configValue?.mode==='ssh') {
       for (const file of [this.configValue.identityFile, this.configValue.knownHostsFile]) {
         if (!fs.statSync(file).isFile()) throw Error('Relay key configuration is missing');
       }
+    }
+    if(this.configValue?.mode==='named')namedTunnelArguments(this.configValue,localURL);
+    if(this.configValue?.mode==='local'){
+      this.localURL=localURL;this.desired=false;
+      this.set({phase:'local',mode:'local',url:null,message:'Local MCP only. No public endpoint is running.'});
+      return this.status();
     }
     this.localURL = localURL;
     this.desired = true;
@@ -86,16 +93,21 @@ class Tunnel {
   launch(generation) {
     if (!this.desired || generation !== this.generation) return;
     let binary, args;
-    if (this.configValue) {
+    if (this.configValue?.mode==='ssh') {
       binary = findExecutable('ssh');if(!binary)throw Error('Install the operating system OpenSSH client to use this relay'); args = sshArguments(this.configValue, this.localURL);
       this.set({phase: 'connecting', mode: 'vps', url: this.configValue.publicOrigin + '/mcp', message: 'Connecting to your VPS relay; verifying public OAuth endpoint…'});
     } else {
       const bundled=process.resourcesPath&&path.join(process.resourcesPath,'tunnel',process.platform==='win32'?'cloudflared.exe':'cloudflared');
       const built=path.join(__dirname,'..','build','tunnel',process.platform==='win32'?'cloudflared.exe':'cloudflared');
       binary=[this.temporaryBinary,bundled,built].find(p=>p&&fs.existsSync(p))||findExecutable('cloudflared');
-      if (!binary) { this.desired = false; this.set({phase: 'error', url: null, message: 'Configure a VPS relay or install the official cloudflared client.'}); return; }
-      args = ['tunnel', '--url', new URL(this.localURL).origin, '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4'];
-      this.set({phase: 'connecting', mode: 'temporary', url: null, message: 'Starting temporary HTTPS tunnel…'});
+      if (!binary) { this.desired = false; this.set({phase: 'error', url: this.configValue?.publicOrigin?this.configValue.publicOrigin+'/mcp':null, message: 'Install the official cloudflared client to enable this tunnel.'}); return; }
+      if(this.configValue?.mode==='named'){
+        args=namedTunnelArguments(this.configValue,this.localURL);
+        this.set({phase:'connecting',mode:'named',url:this.configValue.publicOrigin+'/mcp',message:'Connecting named Cloudflare Tunnel with a fixed public hostname…'});
+      }else{
+        args=['tunnel','--url',new URL(this.localURL).origin,'--no-autoupdate','--protocol','http2','--edge-ip-version','4'];
+        this.set({phase:'connecting',mode:'temporary',url:null,message:'Starting temporary HTTPS tunnel…'});
+      }
     }
     const child = this.spawn(binary, args, {stdio: ['ignore', 'ignore', 'pipe'],windowsHide:true});
     this.child = child;
@@ -104,21 +116,14 @@ class Tunnel {
       if (this.child !== child || generation !== this.generation) return;
       this.child = null; clearInterval(this.healthTimer);
       if (!this.desired) return;
-      if (this.configValue) {
-        this.configValue = null;
-        this.probeFailures = 0;
-        clearTimeout(this.retryTimer); clearTimeout(this.initialTimer);
-        this.set({phase: 'connecting', mode: 'temporary', url: null, message: 'VPS relay disconnected; switching to temporary HTTPS tunnel…'});
-        this.launch(generation);
-        return;
-      }
+      // Persistent tunnel modes retry the same hostname, never switch to a temporary public URL.
       const delay = Math.min(30000, 2000 * 2 ** Math.min(this.retries++, 4));
       this.set({phase: 'retrying', message: 'Relay disconnected. Retrying in ' + (delay / 1000) + 's. ' + String(reason || '').slice(-180)});
       this.retryTimer = setTimeout(() => this.launch(generation), delay); this.retryTimer.unref?.();
     };
     child.stderr.on('data', chunk => {
       stderr = (stderr + chunk.toString()).slice(-4096);
-      if (!this.configValue && !this.state.url) {
+      if ((!this.configValue||this.configValue.mode==='temporary') && !this.state.url) {
         const match = stderr.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
         if (match) { this.set({url: match[0] + '/mcp', message: 'Checking the temporary HTTPS address…'}); this.check(generation); }
       }
@@ -138,22 +143,14 @@ class Tunnel {
       if (!this.desired || generation !== this.generation || !this.child || this.state.url !== url) return;
       this.retries = 0;
       this.probeFailures = 0;
-      this.set({phase: 'online', lastCheckedAt: Date.now(), message: this.configValue
-        ? 'Public endpoint verified. Your VPS relay keeps this address across app restarts. OAuth approval is required for new AIs.'
-        : 'Public endpoint verified. Temporary address changes when this tunnel restarts; update remote clients afterward.'});
+      this.set({phase:'online',lastCheckedAt:Date.now(),message:this.configValue?.mode==='named'
+        ? 'Named Cloudflare Tunnel verified at its fixed public hostname. OAuth pairing and device approval still apply.'
+        : this.configValue?.mode==='ssh'
+        ? 'Public VPS relay verified. Its HTTPS address stays configured across app restarts.'
+        : 'Public endpoint verified. Temporary address changes when this tunnel restarts.'});
     } catch (error) {
       if (this.desired && generation === this.generation && this.child) {
-        if (this.configValue && ++this.probeFailures >= 2) {
-          const child = this.child;
-          this.child = null;
-          clearInterval(this.healthTimer); clearTimeout(this.initialTimer);
-          this.configValue = null;
-          this.probeFailures = 0;
-          child?.kill('SIGTERM');
-          this.set({phase: 'connecting', mode: 'temporary', url: null, lastCheckedAt: Date.now(), message: 'VPS relay is unreachable; switching to temporary HTTPS tunnel…'});
-          this.launch(generation);
-          return;
-        }
+        this.probeFailures++;
         this.set({phase: 'unreachable', lastCheckedAt: Date.now(), message: 'Remote endpoint is not reachable: ' + error.message + '. Local MCP remains available; checking again automatically.'});
       }
     } finally { this.probing = false; }
