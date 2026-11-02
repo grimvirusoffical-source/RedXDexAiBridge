@@ -11,6 +11,7 @@ Var RedXPage
 Var RedXProgress
 Var RedXStatus
 Var RedXArt
+Var RedXOwnerPID
 !endif
 
 !macro RedXExtractTheme
@@ -75,12 +76,51 @@ Function RedXThemeShow
 FunctionEnd
 
 Function RedXThemeLeave
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  ; The page itself must still belong to this installer. HWNDs may be recycled
+  ; after a hard helper kill or after the native page has been destroyed.
+  System::Call 'kernel32::GetCurrentProcessId() i .r3'
+  System::Call 'user32::GetWindowThreadProcessId(p $RedXPage,*i .r1) i .r0'
+  ${If} $1 != $3
+    Goto redx_theme_leave_done
+  ${EndIf}
   System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeWindow") p .r0'
   StrCpy $RedXArt $0
+  System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeOwnerPID") p .r0'
+  StrCpy $RedXOwnerPID $0
   ${If} $RedXArt != 0
-    ; Bounded close of the drawing process; no installer script timer or callback.
-    System::Call 'user32::SendMessageTimeoutW(p $RedXArt,i 0x0010,p 0,p 0,i 2,i 1000,*p .r0)'
+  ${AndIf} $RedXOwnerPID != 0
+    System::Call 'user32::GetParent(p $RedXArt) p .r0'
+    System::Call 'user32::GetWindowThreadProcessId(p $RedXArt,*i .r1) i .r2'
+    ${If} $0 == $RedXPage
+    ${AndIf} $1 == $RedXOwnerPID
+    ${AndIf} $1 != $3
+      ; Close only the child still bound to the registered helper process.
+      System::Call 'user32::SendMessageTimeoutW(p $RedXArt,i 0x0010,p 0,p 0,i 2,i 1000,*p .r0)'
+    ${EndIf}
   ${EndIf}
+  ; Remove only this same registration pair, including stale hard-kill values.
+  ; A graceful helper may already have removed its own pair while closing.
+  System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeWindow") p .r0'
+  System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeOwnerPID") p .r1'
+  ${If} $0 == $RedXArt
+  ${AndIf} $1 == $RedXOwnerPID
+    System::Call 'user32::RemovePropW(p $RedXPage,w "RedXInstallerThemeWindow") p .r0'
+    System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeWindow") p .r0'
+    System::Call 'user32::GetPropW(p $RedXPage,w "RedXInstallerThemeOwnerPID") p .r1'
+    ${If} $0 == 0
+    ${AndIf} $1 == $RedXOwnerPID
+      System::Call 'user32::RemovePropW(p $RedXPage,w "RedXInstallerThemeOwnerPID") p .r0'
+    ${EndIf}
+  ${EndIf}
+redx_theme_leave_done:
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
 FunctionEnd
 
 Function .onGUIEnd
