@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/redxdex-control
 build/redxdex-control.exe
+build/redx-installer-theme.exe
 *.enc
 .env*
 *.p8
