@@ -2,7 +2,7 @@
 const crypto=require('node:crypto');
 const {PlatformError}=require('./index.cjs');
 const DEVICELESS=new Set(['/catalog','/me','/device/challenge','/device/enroll','/account/join']);
-function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,rawWebhook=null,prefix='/redxai-bridge/api',publicOrigin='https://red-xai.com'}={}){
+function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,rawWebhook=null,readiness=null,prefix='/redxai-bridge/api',publicOrigin='https://red-xai.com'}={}){
  if(!platform||typeof authenticate!=='function')throw Error('Trusted authentication adapter required');
  const budgets=new Map();
  return async(req,res)=>{
@@ -14,6 +14,7 @@ function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,r
    if(route==='/stripe/webhook'&&req.method==='POST'&&rawWebhook)return await rawWebhook(req,res);
    if(!['GET','POST'].includes(req.method))return send(405,{error:'method_not_allowed'});
    if(req.headers.origin&&req.headers.origin!==publicOrigin)return send(403,{error:'cross_origin_refused'});
+   if(route==='/readiness'){if(req.method!=='GET')return send(405,{error:'method_not_allowed'});const {publicReadiness}=require('./readiness.cjs');let result={};try{if(typeof readiness==='function')result=await readiness();}catch{}return send(200,publicReadiness(result,platform.legalVersion));}
    let actor=await authenticate(req);if(!actor||actor.verified!==true)return send(401,{error:'sign_in_required'});
    const now=Date.now();let budget=budgets.get(actor.sub);if(!budget||budget.untilMs<=now){budget={count:0,untilMs:now+60000};budgets.set(actor.sub,budget);}if(++budget.count>240)return send(429,{error:'rate_limited',retryAfter:Math.ceil((budget.untilMs-now)/1000)});if(budgets.size>1000)for(const [sub,value]of budgets)if(value.untilMs<=now)budgets.delete(sub);
    const chunks=[];let length=0;

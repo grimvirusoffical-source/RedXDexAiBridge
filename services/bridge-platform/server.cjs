@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {createPlatform}=require('./index.cjs'),{RedXStore}=require('./store.cjs'),{createHandler,createNativeAuthenticator}=require('./http.cjs'),{PluginMediaStore}=require('./media.cjs');
 const {createStripeBilling,stripeClientFromEnvironment}=require('./stripe.cjs');
+const {createReadinessProbe,reviewedLegal}=require('./readiness.cjs');
 function privateFile(file){if(!path.isAbsolute(file||''))throw Error('An absolute protected configuration path is required');const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||(process.platform!=='win32'&&(st.mode&0o077)))throw Error('Server configuration must be a private regular file');return fs.readFileSync(file,'utf8');}
 async function createProductionService(env=process.env){
  const config=JSON.parse(privateFile(env.BRIDGE_CONFIG_FILE));if(!['sandbox','live'].includes(config.paymentsMode))throw Error('Explicit Stripe mode required');const priceCatalog=config.paymentsMode==='sandbox'?require('./sandbox-catalog.json'):JSON.parse(privateFile(config.stripeCatalogFile));if(priceCatalog.mode!==config.paymentsMode)throw Error('Stripe catalog mode mismatch');
@@ -9,15 +10,16 @@ async function createProductionService(env=process.env){
  // This adapter must come from the actual deployed account authority. Missing
  // authority blocks deployment; no local flag can substitute for MFA/ownership.
  privateFile(config.authorityModule);const authority=require(config.authorityModule);
- for(const method of ['resolvePrivileges','revokeBridgeSession','deleteBridgeMembership','deleteAccount','moderate','cancelSubscription','trustedIP'])if(typeof authority[method]!=='function')throw Error('Account authority integration missing: '+method);
+ for(const method of ['resolvePrivileges','revokeBridgeSession','deleteBridgeMembership','deleteAccount','moderate','cancelSubscription','trustedIP','verifyCSRF','verifyDeploymentReadiness'])if(typeof authority[method]!=='function')throw Error('Account authority integration missing: '+method);
  const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database||'redxai_accounts'});
- const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(legal.requiresReview&&!config.legalApproved)throw Error('Published agreement versions have not been approved');
+ const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(config.legalApproved!==true||!reviewedLegal(legal,config.legalApproval)||!reviewedLegal(legal))throw Error('Published agreements and business details have not been reviewed and approved');
  const platform=createPlatform({store,authority,ownerSubjects:config.ownerSubjects,licensePrivateKey:privateFile(config.licenseKeyFile),ipHashKey:privateFile(config.ipHashKeyFile).trim(),production:true,legalVersion:legal.version,legalDocuments:legal.documents});
  if(!/^bpc_[A-Za-z0-9]+$/.test(priceCatalog.portalConfiguration||''))throw Error('An explicit mode-specific Billing Portal configuration is required');
- const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
+ const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookEndpointId:config.stripeWebhookEndpointId,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
  const media=new PluginMediaStore(config.mediaDirectory);
  const authenticate=createNativeAuthenticator({resolvePrivileges:authority.resolvePrivileges,trustedIP:authority.trustedIP});
- const handler=createHandler({platform,authenticate,verifyCSRF:authority.verifyCSRF,rawWebhook:billing.rawWebhook,extraRoutes:async input=>{
+ const readiness=createReadinessProbe({authority,store,platform,billing,legal,config,clientConfig:require('../../app/platform-config.cjs')});
+ const handler=createHandler({platform,authenticate,readiness,verifyCSRF:authority.verifyCSRF,rawWebhook:billing.rawWebhook,extraRoutes:async input=>{
   if(input.route==='/admin/media'){const me=await platform.dispatch(input.actor,'/me');if(me.role!=='owner'||!me.accepted||!input.actor.mfaUsed||!Number.isFinite(input.actor.reauthAtMs)||input.actor.reauthAtMs>Date.now()||Date.now()-input.actor.reauthAtMs>600000)throw Error('Verified owner reauthentication required');const b=Buffer.from(String(input.body.base64||''),'base64');return{image:media.put(b,input.body.mimeType)};}
   if(input.route==='/media/read'){if(!/^\/bridge-platform\/media\/[a-f0-9]{64}\.(png|jpg|webp)$/.test(input.body.image||''))throw Error('Invalid image');const found=media.get(path.basename(input.body.image));if(!found)throw Error('Image not found');return{mimeType:found.type,base64:found.bytes.toString('base64')};}
   return billing.extraRoutes(input);
