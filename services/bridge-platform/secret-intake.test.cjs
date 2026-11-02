@@ -2,6 +2,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http'),vm=require('node:vm'),{createRequire}=require('node:module'),{EventEmitter}=require('node:events'),{Readable}=require('node:stream');
 const sourceFile=path.join(__dirname,'secret-intake.cjs'),source=fs.readFileSync(sourceFile,'utf8'),ACCOUNT='acct_1USFfGEKYCPRlM5G';
 const API='rk_test_'+'A'.repeat(32),WEBHOOK='whsec_'+'B'.repeat(32);
+// macOS exposes its temporary directory through /var -> /private/var. Use the
+// canonical fixture location; the production destination guard stays strict.
+const TEMPORARY_ROOT=fs.realpathSync(os.tmpdir());
 const RESTRICTED=os.platform()==='win32'&&/(?:^|\/)Packages\/[^/]+\/AC\/Temp(?:\/|$)/i.test(os.tmpdir().replace(/\\/g,'/'));
 let virtualPort=19000;
 function virtualHTTP(){
@@ -29,8 +32,8 @@ function load({platform='win32',temporaryDirectory='C:/Users/Fixture/AppData/Loc
  vm.runInNewContext(source,{module:exported,exports:exported.exports,require:requireMock,Buffer,TextDecoder,URLSearchParams,setTimeout,clearTimeout,console:{log:value=>logs.push(String(value)),error:value=>logs.push(String(value))}},{filename:sourceFile});
  return{...exported.exports,transport};
 }
-function directory(){return fs.mkdtempSync(path.join(os.tmpdir(),'redx-intake-test-'));}
-function remove(directory){assert.ok(path.isAbsolute(directory)&&directory.startsWith(path.join(os.tmpdir(),'redx-intake-test-')));fs.rmSync(directory,{recursive:true,force:true});}
+function directory(){return fs.mkdtempSync(path.join(TEMPORARY_ROOT,'redx-intake-test-'));}
+function remove(directory){assert.ok(path.isAbsolute(directory)&&directory.startsWith(path.join(TEMPORARY_ROOT,'redx-intake-test-')));fs.rmSync(directory,{recursive:true,force:true});}
 async function fixture({kind='sandbox-api',writer,settings={},runtime={},logs=[]}={}){
  const root=directory(),file=path.join(root,'protected','sandbox.secret'),calls=[],module=load({...runtime,logs});
  try{const intake=await module.startSecretIntake({file,kind,writer:writer||((...args)=>{calls.push(args);return{saved:true};}),...settings});return{root,file,kind,calls,intake,transport:module.transport,cleanup:async()=>{await intake.close();remove(root);}};}catch(error){remove(root);throw error;}

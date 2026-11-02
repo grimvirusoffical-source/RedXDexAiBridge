@@ -28,19 +28,20 @@ try{
  $plain=$null
  $envelope=@{version=1;protection='windows-dpapi-current-user';mode='sandbox';kind=$Kind;account=$Account;ciphertext=(ConvertFrom-SecureString $secret)}
  [IO.Directory]::CreateDirectory($directory) | Out-Null
- $stream=[IO.File]::Open($target,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+ $access=[Security.AccessControl.FileSecurity]::new()
+ $access.SetAccessRuleProtection($true,$false)
+ $owner=[Security.Principal.WindowsIdentity]::GetCurrent().User
+ $access.SetOwner($owner)
+ $access.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($owner,'FullControl','Allow'))
+ $access.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),'FullControl','Allow'))
+ # Apply the private ACL when creating the new file. A write-only stream does
+ # not carry permission to change its ACL after creation on all Windows hosts.
+ if($PSVersionTable.PSEdition -eq 'Core'){
+  $stream=[IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($target),[IO.FileMode]::CreateNew,[Security.AccessControl.FileSystemRights]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::None,$access)
+ }else{
+  $stream=[IO.FileStream]::new($target,[IO.FileMode]::CreateNew,[Security.AccessControl.FileSystemRights]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::None,$access)
+ }
  try{
-  $access=[Security.AccessControl.FileSecurity]::new()
-  $access.SetAccessRuleProtection($true,$false)
-  $owner=[Security.Principal.WindowsIdentity]::GetCurrent().User
-  $access.SetOwner($owner)
-  $access.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($owner,'FullControl','Allow'))
-  $access.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),'FullControl','Allow'))
-  if($PSVersionTable.PSEdition -eq 'Core'){
-   [IO.FileSystemAclExtensions]::SetAccessControl($stream,$access)
-  }else{
-   $stream.SetAccessControl($access)
-  }
   $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($envelope | ConvertTo-Json -Compress))
   $stream.Write($bytes,0,$bytes.Length)
  }finally{$stream.Dispose()}

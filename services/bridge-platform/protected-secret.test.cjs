@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {readSandboxKey,readWebhookSecret,writeSandboxSecret}=require('./protected-secret.cjs');
 const account='acct_fixtureSandbox',key=['rk','test','FixtureOnlyNoProviderCredential123456'].join('_'),webhook=['whsec','FixtureOnlyNotARealSigningSecret123456'].join('_');
 const nativeAclSkip=process.platform!=='win32'?'Windows only':/[\\/]Packages[\\/]sandbox\.[^\\/]+[\\/]AC[\\/]Temp/i.test(os.tmpdir())?'Private owner ACL requires a normal user token; this AppContainer is intentionally excluded':false;
-function fixture(fn){const directory=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-private-secret-'));try{return fn(directory);}finally{fs.rmSync(directory,{recursive:true,force:true});}}
+function fixture(fn){const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-private-secret-'));try{return fn(directory);}finally{fs.rmSync(directory,{recursive:true,force:true});}}
 function envelope(kind='sandbox-api',changes={}){return{version:1,protection:'windows-dpapi-current-user',mode:'sandbox',kind,account,ciphertext:'A'.repeat(96),...changes};}
 test('DPAPI reader uses static arguments and privately captures decrypted output',()=>fixture(directory=>{
  const file=path.join(directory,'sandbox.dpapi');fs.writeFileSync(file,JSON.stringify(envelope()));
@@ -63,6 +63,8 @@ test('Windows private intake respects execution policy and otherwise protects ne
  }
  const output=cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],options);
  assert.equal(output.includes(key),false);assert.equal(fs.readFileSync(file,'utf8').includes(key),false);assert.equal(readSandboxKey(file,{expectedAccount:account}),key);
+ const acl=JSON.parse(cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',"Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; $acl=Get-Acl -LiteralPath $env:REDX_INTAKE_TEST_FILE; @{protected=$acl.AreAccessRulesProtected; owner=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; rules=@($acl.Access | ForEach-Object { @{sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; rights=[int]$_.FileSystemRights; inherited=$_.IsInherited; type=[string]$_.AccessControlType} })} | ConvertTo-Json -Compress -Depth 4"],options));
+ assert.equal(acl.protected,true);assert.equal(acl.rules.length,2);assert.deepEqual(acl.rules.map(rule=>rule.sid).sort(),[acl.owner,'S-1-5-18'].sort());for(const rule of acl.rules){assert.equal(rule.rights,2032127);assert.equal(rule.inherited,false);assert.equal(rule.type,'Allow');}
  const before=fs.readFileSync(file,'utf8');assert.throws(()=>cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],options));assert.equal(fs.readFileSync(file,'utf8'),before);
 }));
 test('Unix files must be private, owned by the reader and restricted Sandbox keys',{skip:process.platform==='win32'},()=>fixture(directory=>{

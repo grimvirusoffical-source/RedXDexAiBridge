@@ -2,7 +2,7 @@
 
 This candidate adds the red/black Windows installer with a native-progress X ring, a verified direct CLI download, independent terminal/crawler client credentials, plugin recipes, a six-tier membership catalog, Axioms, account controls, and owner/admin pages.
 
-Platform commerce is NOT enabled in the stable app. The production account-authority adapter, protected RedX credentials, verified owner subject/MFA linkage, published agreements, Stripe server credential and signed webhook deployment must pass integration readiness first. Sandbox catalog creation and isolated fixtures are not evidence of a production deployment. Existing v0.10.16 remains the stable login repair.
+Platform commerce is NOT enabled in the stable app. The production account-authority adapter, protected RedX credentials, verified owner subject/MFA linkage, published agreements, Stripe server credential and signed webhook deployment must pass integration readiness first. Sandbox catalog creation and isolated fixtures are not evidence of a production deployment. Stable currently remains v0.10.18; the separate canonical manual-login hotfix has its own verification gate.
 
 Owner benefits are server-authoritative: all plugins and the highest tier free forever on unlimited enrolled devices, while normal authentication, device proof, tool permissions and emergency STOP remain required. Admins do not inherit owner benefits.
 
