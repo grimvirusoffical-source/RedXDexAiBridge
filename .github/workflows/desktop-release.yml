@@ -240,7 +240,15 @@ jobs:
           set -euo pipefail
           export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-mac-background-data"
           export REDXDEX_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-mac-background-smoke"
-          ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
+          smoke_shell_marker() {
+            printf '%s CI_SMOKE_SHELL %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$RUNNER_TEMP/bridge-mac-background.log"
+          }
+          trap 'smoke_shell_marker SIGINT; exit 130' INT
+          trap 'smoke_shell_marker SIGTERM; exit 143' TERM
+          trap 'smoke_shell_status=$?; smoke_shell_marker "EXIT status=$smoke_shell_status"' EXIT
+          smoke_shell_marker START
+          ./node_modules/.bin/electron . >> "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { smoke_shell_marker ELECTRON_NONZERO; cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
+          smoke_shell_marker ELECTRON_RETURNED_ZERO
           node -e 'const fs=require("fs"),p=process.env.REDXDEX_SMOKE_OUTPUT+"/result.json",r=JSON.parse(fs.readFileSync(p,"utf8"));if(!r.backgroundWhileHidden||r.crawlerTools!==5||r.rendererErrors?.length)process.exit(1);console.log("macOS background smoke passed",r.navigation.length,"pages");'
 
 
@@ -266,6 +274,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bridge-mac-background.log
             ${{ runner.temp }}/bridge-mac-background-smoke/result.json
+            ${{ runner.temp }}/bridge-mac-background-smoke/smoke-lifecycle.jsonl
             ${{ runner.temp }}/bridge-mac-background-smoke/*.png
             ${{ runner.temp }}/bridge-auth-smoke.log
             ${{ runner.temp }}/bridge-auth-smoke/result.json
