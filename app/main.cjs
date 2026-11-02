@@ -227,7 +227,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   ipc('account:manual:2fa',async(code,method)=>{const r=await accountAuth.manual2fa(code,method);if(r.signedIn)await openAfterLogin();return r;});
   ipc('account:logout',async()=>{await shutDownGateway();await accountAuth.logout();await win.loadFile(path.join(__dirname,'sign-in.html'));return {signedIn:false};});
   ipc('account:signup',()=>shell.openExternal('https://red-xai.com/signup'));
-  ipc('cli:download',()=>shell.openExternal('https://github.com/grimvirusoffical-source/red-xai-installers/releases'));
+  ipc('cli:download',async()=>{const chosen=await dialog.showOpenDialog(win,{title:'Download Red-XAI CLI',properties:['openDirectory','createDirectory']});if(chosen.canceled)return{cancelled:true};const result=await require('./cli-download.cjs').downloadCli({directory:chosen.filePaths[0],onProgress:value=>emit('cli:progress',value)});return{...result,message:'CLI '+result.version+' downloaded to '+result.path+'. Node.js 20 or newer is required to run it.'};});
   ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});

@@ -1,4 +1,8 @@
 !include "LogicLib.nsh"
+!include "${BUILD_RESOURCES_DIR}\installer-theme.nsh"
+!macro customInit
+  !insertmacro RedXExtractTheme
+!macroend
 !macro customInstall
   ; Never install optional dependencies without interactive consent.
   ; Skip during silent installs and in-place auto-updates.

@@ -40,7 +40,7 @@ el('twofactor-form').onsubmit=e=>{e.preventDefault();attempt(async()=>{
 });};
 el('twofactor-back').onclick=()=>{el('twofactor-form').hidden=true;el('manual-form').hidden=false;el('twofactor-code').value='';msg('Sign in again to request a new code.');};
 el('create-account').onclick=()=>attempt(()=>bridge.accountSignup());
-el('get-cli').onclick=()=>attempt(async()=>{await bridge.cliDownload();msg('Opened the Red-XAI CLI repository releases. If no release is listed, the CLI installer is not yet published.');});
+el('get-cli').onclick=()=>attempt(async()=>{const r=await bridge.cliDownload();if(!r.cancelled)msg(r.message,true);});
 bridge.accountStatus().then(status=>{if(status.signedIn)msg('Account verified.');}).catch(e=>msg(e.message));
 
 async function loginUpdateState(){
