@@ -17,6 +17,8 @@ Var RedXSourceDC
 Var RedXSourceBitmap
 Var RedXLastPercent
 Var RedXTimer
+Var RedXTimerHost
+Var RedXOriginalDlgProc
 !endif
 
 !macro RedXExtractTheme
@@ -35,6 +37,7 @@ Function RedXThemeShow
   StrCpy $RedXSourceBitmap 0
   StrCpy $RedXSourceDC 0
   StrCpy $RedXTimer 0
+  StrCpy $RedXTimerHost 0
   FindWindow $RedXPage "#32770" "" $HWNDPARENT
   ${If} $RedXPage == 0
     Return
@@ -44,12 +47,35 @@ Function RedXThemeShow
   ${If} $RedXProgress == 0
     Return
   ${EndIf}
+  ; nsDialogs::CreateTimer needs the plugin's Create initialization. Keep its
+  ; timer host hidden; the native MUI installation page remains in charge.
+  ; Create subclasses the outer dialog for custom-page navigation, which this
+  ; native page does not need, so restore that original handler immediately.
+  System::Call 'user32::GetWindowLongW(p $HWNDPARENT,i 4) p .r0'
+  StrCpy $RedXOriginalDlgProc $0
+  nsDialogs::Create 1018
+  Pop $RedXTimerHost
+  System::Call 'user32::SetWindowLongW(p $HWNDPARENT,i 4,p $RedXOriginalDlgProc)'
+  ${If} $RedXTimerHost == error
+    StrCpy $RedXTimerHost 0
+    Return
+  ${EndIf}
   SetCtlColors $HWNDPARENT F5F0F2 101014
   SetCtlColors $RedXPage F5F0F2 101014
   ; Keep a normal OS-owned window frame, with its dark caption where supported.
   System::Call 'dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i 20, *i 1, i 4) i .r0'
   System::Call 'user32::SetWindowPos(p $HWNDPARENT,p 0,i 0,i 0,i 640,i 430,i 6)'
   System::Call 'user32::SetWindowPos(p $RedXPage,p 0,i 16,i 58,i 608,i 312,i 4)'
+  GetDlgItem $0 $HWNDPARENT 1039
+  ShowWindow $0 0
+  GetDlgItem $0 $HWNDPARENT 1256
+  ShowWindow $0 0
+  GetDlgItem $0 $HWNDPARENT 1028
+  ShowWindow $0 0
+  GetDlgItem $0 $HWNDPARENT 1045
+  ShowWindow $0 0
+  GetDlgItem $0 $HWNDPARENT 1035
+  System::Call 'user32::SetWindowPos(p $0,p 0,i 0,i 56,i 624,i 1,i 4)'
   ShowWindow $RedXProgress 0
   GetDlgItem $0 $RedXPage 1016
   ShowWindow $0 0
@@ -140,10 +166,14 @@ Function RedXThemeTick
 FunctionEnd
 
 Function RedXThemeLeave
+  ${If} $RedXTimerHost != 0
+    nsDialogs::KillTimer $RedXTimer
+    System::Call 'user32::DestroyWindow(p $RedXTimerHost)'
+    StrCpy $RedXTimerHost 0
+  ${EndIf}
   ${If} $RedXSourceBitmap == 0
     Return
   ${EndIf}
-  nsDialogs::KillTimer $RedXTimer
   SendMessage $RedXArt 0x0172 0 0 $0
   ${If} $0 != 0
     System::Call 'gdi32::DeleteObject(p r0)'

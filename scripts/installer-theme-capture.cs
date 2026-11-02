@@ -64,10 +64,11 @@ class InstallerThemeCapture {
            int native=high>low?(pos-low)*100/(high-low):0,rendered;
            // PrintWindow performs cross-process rendering; HBITMAP handles are process-private.
            using(var image=Capture(art))if(!canonical.TryGetValue(Hash(image),out rendered))throw new Exception("Rendered ring is not a valid generated frame.");
-           if(native<0||native>100||Math.Abs(native-rendered)>15)throw new Exception("Rendered ring does not follow native NSIS progress.");
            var text=new StringBuilder(1024);ReadControlText(status,0x000D,new IntPtr(text.Capacity),text);
            positions.Add(native);bool changed=frames.Add(rendered);statuses.Add(text.ToString());samples++;
            lines.Add(native+","+rendered+","+text.ToString().Replace(","," "));
+           File.WriteAllLines(Path.Combine(args[2],"native-progress.csv"),lines);
+           if(native<0||native>100||Math.Abs(native-rendered)>15)throw new Exception("Rendered ring "+rendered+" does not follow native NSIS progress "+native+" (range "+low+".."+high+", position "+pos+").");
            if(changed&&snapshots<4&&rendered>=snapshots*20) {
              using(var screenshot=Capture(window)) {
                int red=0;for(int y=0;y<screenshot.Height;y++)for(int x=0;x<screenshot.Width;x++){var color=screenshot.GetPixel(x,y);if(color.R>150&&color.G<120&&color.B<160)red++;}
