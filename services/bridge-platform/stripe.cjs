@@ -16,7 +16,7 @@ function createStripeBilling({client,platform,webhookSecret,livemode=false,allow
   if(o.kind==='subscription')await portalConfig();
   const selectedPrice=await pricing.prepare(o);
   const integrationIdentifier=await state(b=>{b.orders[o.id]??={};b.orders[o.id].integrationIdentifier??='redxai_bridge_'+Array.from(crypto.randomBytes(8),n=>String.fromCharCode(97+n%26)).join('');return b.orders[o.id].integrationIdentifier;});
-  let customer=await state(b=>b.customers[o.sub]);if(!customer){const c=await client.customers.create({metadata:{redx_subject:o.sub,redx_app:'bridge'}},{idempotencyKey:'bridge-customer:'+o.sub});customer=c.id;await state(b=>{b.customers[o.sub]=customer;});}
+  let customer=await state(b=>b.customers[o.sub]);if(!customer){const c=await client.customers.create({metadata:{redx_subject:o.sub,redx_app:'bridge'}},{idempotencyKey:'bridge-customer:'+crypto.createHash('sha256').update(o.sub).digest('hex')});customer=c.id;await state(b=>{b.customers[o.sub]=customer;});}
   const checkoutExpiresAt=o.kind==='subscription'?await reserveSubscription(o,customer):null;
   const metadata={redx_order:o.id,redx_subject:o.sub,redx_device:o.deviceId,redx_kind:o.kind,redx_sku:o.sku},recurring=o.kind==='subscription';
   const session=await client.checkout.sessions.create({mode:recurring?'subscription':'payment',customer,client_reference_id:o.id,metadata,line_items:[selectedPrice.line],...(checkoutExpiresAt?{expires_at:checkoutExpiresAt}:{}),...(recurring?{subscription_data:{metadata}}:{payment_intent_data:{metadata}}),success_url:'https://red-xai.com/redxai-connect/developer',cancel_url:'https://red-xai.com/redxai-connect/developer',adaptive_pricing:{enabled:false},integration_identifier:integrationIdentifier},{idempotencyKey:'bridge-checkout:'+o.id});
@@ -119,6 +119,3 @@ function createStripeBilling({client,platform,webhookSecret,livemode=false,allow
 }
 function stripeClientFromEnvironment(env=process.env){const key=env.STRIPE_RESTRICTED_KEY;if(!/^(rk|sk)_(test|live)_/.test(key||''))throw Error('Server-side restricted Stripe credential is required');if(key.includes('_live_')&&env.BRIDGE_ENABLE_LIVE_PAYMENTS!=='yes')throw Error('Live payments are not enabled');const StripeClient=require('stripe');const client=new StripeClient(key,{maxNetworkRetries:2});Object.defineProperty(client,'bridgeLivemode',{value:key.includes('_live_')});return client;}
 module.exports={createStripeBilling,stripeClientFromEnvironment};
-
-
-

@@ -9,7 +9,7 @@ async function createProductionService(env=process.env){
  // This adapter must come from the actual deployed account authority. Missing
  // authority blocks deployment; no local flag can substitute for MFA/ownership.
  privateFile(config.authorityModule);const authority=require(config.authorityModule);
- for(const method of ['resolvePrivileges','revokeBridgeSession','deleteAccount','moderate','cancelSubscription','trustedIP'])if(typeof authority[method]!=='function')throw Error('Account authority integration missing: '+method);
+ for(const method of ['resolvePrivileges','revokeBridgeSession','deleteBridgeMembership','deleteAccount','moderate','cancelSubscription','trustedIP'])if(typeof authority[method]!=='function')throw Error('Account authority integration missing: '+method);
  const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database||'redxai_accounts'});
  const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(legal.requiresReview&&!config.legalApproved)throw Error('Published agreement versions have not been approved');
  const platform=createPlatform({store,authority,ownerSubjects:config.ownerSubjects,licensePrivateKey:privateFile(config.licenseKeyFile),ipHashKey:privateFile(config.ipHashKeyFile).trim(),production:true,legalVersion:legal.version,legalDocuments:legal.documents});
