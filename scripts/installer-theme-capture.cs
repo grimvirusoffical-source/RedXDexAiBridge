@@ -41,7 +41,7 @@ class InstallerThemeCapture {
    if(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")!="true"||Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT")!="github-hosted"||(args.Length!=3&&args.Length!=4)) { Console.Error.WriteLine("CI runner only."); return 1; }
    bool fallback=args.Length==4&&args[3]=="fallback";
    bool terminate=args.Length==4&&args[3]=="terminate",requireArt=!fallback,helperKilled=false;
-   Process process=null;
+   Process process=null;var helpers=new HashSet<int>();
    try {
      SetProcessDPIAware();
      var canonical=new Dictionary<string,int>();
@@ -50,7 +50,7 @@ class InstallerThemeCapture {
      var start=new ProcessStartInfo(args[0]) { UseShellExecute=false };
      start.EnvironmentVariables["REDX_INSTALLER_THEME_DIAGNOSTICS"]=Path.Combine(args[2],"drawing-helper.log");
      process=Process.Start(start);
-     var positions=new HashSet<int>(); var frames=new HashSet<int>(); var statuses=new HashSet<string>();var helpers=new HashSet<int>();
+     var positions=new HashSet<int>(); var frames=new HashSet<int>(); var statuses=new HashSet<string>();
      int snapshots=0,samples=0,fallbackSamples=0; var lines=new List<string>(); var watch=Stopwatch.StartNew();
      while(!process.HasExited&&watch.ElapsedMilliseconds<20000) {
        IntPtr window=IntPtr.Zero;
@@ -109,6 +109,11 @@ class InstallerThemeCapture {
      File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+"}");
      Console.WriteLine("Native installer theme captures and real progress checks passed.");return 0;
    } catch(Exception error) {Console.Error.WriteLine(error.Message);File.WriteAllText(Path.Combine(args[2],"failure.txt"),error.ToString());return 1;}
-   finally {if(process!=null&&!process.HasExited){process.Kill();process.WaitForExit();}}
+   finally {
+     if(process!=null&&!process.HasExited){process.Kill();process.WaitForExit();}
+     // On a failed assertion, give recorded artwork owners the same bounded
+     // parent-exit grace before PowerShell cleans the checked fixture target.
+     foreach(int id in helpers){try{using(var helper=Process.GetProcessById(id))helper.WaitForExit(2000);}catch(ArgumentException){}}
+   }
  }
 }
