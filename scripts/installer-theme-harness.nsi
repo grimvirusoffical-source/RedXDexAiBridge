@@ -11,6 +11,11 @@ AutoCloseWindow true
 !insertmacro MUI_LANGUAGE "English"
 Function .onInit
   !insertmacro RedXExtractTheme
+  !ifdef REDX_THEME_INVALID_SPRITE
+    ; Deliberately malformed fixture input verifies native-bar fallback.
+    SetOutPath "$PLUGINSDIR\redx-theme"
+    File /oname=progress.bmp "${BUILD_RESOURCES_DIR}\installer-theme\x.svg"
+  !endif
 FunctionEnd
 Section
   SetDetailsPrint textonly

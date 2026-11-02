@@ -18,3 +18,5 @@ node_modules
 verification/
 ci-errors.log
 build/installer-theme/
+
+build/redx-installer-theme.exe

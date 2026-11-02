@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path');
+const {NtExecutable,NtExecutableResource}=require('resedit');
+const exe=NtExecutable.from(fs.readFileSync(path.join(__dirname,'..','build','redx-installer-theme.exe')));
+if(!exe.is32bit())throw Error('Installer artwork helper must match the x86 NSIS host.');
+const manifests=NtExecutableResource.from(exe).entries.filter(entry=>entry.type===24);
+if(manifests.length!==1)throw Error('Installer artwork helper must embed exactly one privilege manifest.');
+const manifest=Buffer.from(manifests[0].bin).toString('utf8');
+if(!/requestedExecutionLevel\s+level="asInvoker"\s+uiAccess="false"\s*\//.test(manifest)||/requireAdministrator|highestAvailable|uiAccess="true"/.test(manifest))throw Error('Installer artwork helper must run asInvoker without UIAccess.');
+console.log('Verified source-built installer helper: x86, asInvoker, no UIAccess.');
