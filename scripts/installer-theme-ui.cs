@@ -9,7 +9,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 class InstallerThemeUI {
- const string Property="RedXInstallerThemeWindow";
+ const string Property="RedXInstallerThemeWindow",OwnerProperty="RedXInstallerThemeOwnerPID";
  static void Trace(string text){
    // Isolated CI diagnostics only; production installs write no extra files.
    if(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")!="true"||Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT")!="github-hosted")return;
@@ -17,6 +17,8 @@ class InstallerThemeUI {
    try{File.AppendAllText(file,DateTime.UtcNow.ToString("O")+" "+text+Environment.NewLine);}catch{}
  }
  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+ [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+ [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr window);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder text,int count);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr CreateWindowEx(int extended,string name,string text,int style,int x,int y,int width,int height,IntPtr parent,IntPtr menu,IntPtr instance,IntPtr param);
@@ -59,16 +61,19 @@ class InstallerThemeUI {
    UIntPtr value;if(SendMessageTimeout(window,message,new IntPtr(argument),IntPtr.Zero,2,500,out value)==IntPtr.Zero)throw new InvalidOperationException("Native progress window is unavailable.");
    return unchecked((int)value.ToUInt32());
  }
+ static uint WindowOwner(IntPtr window){uint owner;GetWindowThreadProcessId(window,out owner);return owner;}
+ static bool OwnArtwork(IntPtr window,IntPtr page,int helper){return window!=IntPtr.Zero&&IsWindow(window)&&GetParent(window)==page&&WindowOwner(window)==(uint)helper;}
  [STAThread] static int Main(string[] args){
    IntPtr page=IntPtr.Zero,progress=IntPtr.Zero,art=IntPtr.Zero;
+   int helper=Process.GetCurrentProcess().Id;uint owner=0;bool ownerRegistered=false,windowRegistered=false;
    Bitmap sprite=null;Process parent=null;System.Windows.Forms.Timer timer=null;ApplicationContext context=null;Artwork window=null;bool failed=false;
    try{
      Trace("startup; argument count="+args.Length);
      if(args.Length!=2)throw new InvalidOperationException("Expected page and native bar.");
      page=new IntPtr(long.Parse(args[0],CultureInfo.InvariantCulture));progress=new IntPtr(long.Parse(args[1],CultureInfo.InvariantCulture));
-     uint owner,progressOwner;GetWindowThreadProcessId(page,out owner);GetWindowThreadProcessId(progress,out progressOwner);
+     uint progressOwner;GetWindowThreadProcessId(page,out owner);GetWindowThreadProcessId(progress,out progressOwner);
      var className=new StringBuilder(256);GetClassName(progress,className,className.Capacity);
-     if(owner==0||owner!=progressOwner||!IsWindow(page)||!IsWindow(progress)||!String.Equals(className.ToString(),"msctls_progress32",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Invalid parent/progress window; class="+className+", same owner="+(owner==progressOwner));
+     if(owner==0||owner==(uint)helper||owner!=progressOwner||!IsWindow(page)||!IsWindow(progress)||GetParent(progress)!=page||!String.Equals(className.ToString(),"msctls_progress32",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Invalid parent/progress window; class="+className+", same owner="+(owner==progressOwner));
      parent=Process.GetProcessById((int)owner);
      // Resolve a fixed sibling directly. Comparing argument paths would reject
      // equivalent 8.3 and long Windows TEMP paths used by NSIS and the CLR.
@@ -82,12 +87,18 @@ class InstallerThemeUI {
      // Leave the native page/header edge outside the bitmap's client surface.
      art=CreateWindowEx(0x08000000,"STATIC","",0x4400000E,204,4,200,232,page,IntPtr.Zero,GetModuleHandle(null),IntPtr.Zero);
      if(art==IntPtr.Zero)throw new InvalidOperationException("Could not create artwork window.");
-     window=new Artwork(art,context);if(!SetProp(page,Property,art))throw new InvalidOperationException("Could not register artwork lifetime.");
+     window=new Artwork(art,context);
+     if(GetProp(page,Property)!=IntPtr.Zero||GetProp(page,OwnerProperty)!=IntPtr.Zero)throw new InvalidOperationException("Artwork lifetime is already registered.");
+     if(!SetProp(page,OwnerProperty,new IntPtr(helper)))throw new InvalidOperationException("Could not register artwork owner.");ownerRegistered=true;
+     if(!SetProp(page,Property,art))throw new InvalidOperationException("Could not register artwork lifetime.");windowRegistered=true;
      Trace("artwork child created");
      int last=-1;var lifetime=Stopwatch.StartNew();
      Action update=delegate{
        uint pageOwner,barOwner;GetWindowThreadProcessId(page,out pageOwner);GetWindowThreadProcessId(progress,out barOwner);
-       if(parent.HasExited||!IsWindow(page)||!IsWindow(progress)||pageOwner!=owner||barOwner!=owner||GetProp(page,Property)!=art||lifetime.Elapsed>TimeSpan.FromMinutes(15)){context.ExitThread();return;}
+       if(parent.HasExited||!IsWindow(page)||!IsWindow(progress)||pageOwner!=owner||barOwner!=owner||GetParent(progress)!=page||!OwnArtwork(art,page,helper)||GetProp(page,Property)!=art||GetProp(page,OwnerProperty)!=new IntPtr(helper)||lifetime.Elapsed>TimeSpan.FromMinutes(15)){context.ExitThread();return;}
+       // MUI can still be showing the page when the helper starts. Wait for
+       // its initial visibility; after drawing, a hidden page ends our lifetime.
+       if(!IsWindowVisible(page)){if(last>=0)context.ExitThread();return;}
        int low=ReadProgress(progress,0x0407,1),high=ReadProgress(progress,0x0407,0),position=ReadProgress(progress,0x0408,0);
        int percent=high>low?(int)(((long)position-low)*100/(high-low)):0;percent=Math.Max(0,Math.Min(100,percent));
        if(percent==last)return;
@@ -104,8 +115,14 @@ class InstallerThemeUI {
      update();timer.Start();Application.Run(context);return failed||window.Failed?1:0;
    }catch(Exception error){Trace(error.GetType().Name+": "+error.Message);return 1;}
    finally{
-     if(timer!=null)timer.Dispose();if(IsWindow(page)&&GetProp(page,Property)==art)RemoveProp(page,Property);
-     if(IsWindow(art))DestroyWindow(art);if(window!=null)window.DisposeFrame();
+     if(timer!=null)timer.Dispose();
+     // A hard kill can leave properties behind. Never remove another owner's
+     // registration or destroy a recycled HWND during graceful cleanup.
+     if(ownerRegistered&&IsWindow(page)&&WindowOwner(page)==owner&&GetProp(page,OwnerProperty)==new IntPtr(helper)){
+       if(GetProp(page,Property)==art)RemoveProp(page,Property);
+       if((!windowRegistered||GetProp(page,Property)==IntPtr.Zero)&&GetProp(page,OwnerProperty)==new IntPtr(helper))RemoveProp(page,OwnerProperty);
+     }
+     if(OwnArtwork(art,page,helper))DestroyWindow(art);if(window!=null)window.DisposeFrame();
      if(sprite!=null)sprite.Dispose();if(parent!=null)parent.Dispose();if(window!=null)window.ReleaseHandle();if(context!=null)context.Dispose();
    }
  }
