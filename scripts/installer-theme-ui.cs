@@ -22,20 +22,36 @@ class InstallerThemeUI {
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr CreateWindowEx(int extended,string name,string text,int style,int x,int y,int width,int height,IntPtr parent,IntPtr menu,IntPtr instance,IntPtr param);
  [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr window);
  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
- [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr window,int message,IntPtr wParam,IntPtr lParam);
  [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr window,int message,IntPtr wParam,IntPtr lParam,uint flags,uint timeout,out UIntPtr result);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool SetProp(IntPtr window,string name,IntPtr value);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetProp(IntPtr window,string name);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr RemoveProp(IntPtr window,string name);
  [DllImport("user32.dll")] static extern IntPtr GetWindowDpiAwarenessContext(IntPtr window);
  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
- [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr bitmap);
+ [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left,Top,Right,Bottom; }
+ [StructLayout(LayoutKind.Sequential)] struct PaintStruct { public IntPtr DC;public int Erase;public Rect Paint;public int Restore,Update;[MarshalAs(UnmanagedType.ByValArray,SizeConst=32)]public byte[] Reserved; }
+ [DllImport("user32.dll")] static extern IntPtr BeginPaint(IntPtr window,out PaintStruct paint);
+ [DllImport("user32.dll")] static extern bool EndPaint(IntPtr window,ref PaintStruct paint);
+ [DllImport("user32.dll")] static extern bool InvalidateRect(IntPtr window,IntPtr rect,bool erase);
+ [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr window);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
  sealed class Artwork : NativeWindow {
    readonly ApplicationContext context;
+   Bitmap frame;
+   public bool Failed {get;private set;}
    public Artwork(IntPtr window,ApplicationContext value){context=value;AssignHandle(window);}
+   public void SetFrame(Bitmap value){var previous=frame;frame=value;if(previous!=null)previous.Dispose();InvalidateRect(Handle,IntPtr.Zero,false);UpdateWindow(Handle);}
+   public void DisposeFrame(){if(frame!=null){frame.Dispose();frame=null;}}
+   void PaintTo(IntPtr dc){
+     try{if(frame!=null&&dc!=IntPtr.Zero)using(var graphics=Graphics.FromHdc(dc))graphics.DrawImageUnscaled(frame,0,0);}
+     catch(Exception error){Failed=true;Trace("paint failure: "+error.Message);context.ExitThread();}
+   }
    protected override void WndProc(ref Message message){
      if(message.Msg==0x0010){DestroyWindow(Handle);context.ExitThread();return;}
+     if(message.Msg==0x000F){PaintStruct paint;IntPtr dc=BeginPaint(Handle,out paint);try{PaintTo(dc);}finally{EndPaint(Handle,ref paint);}message.Result=IntPtr.Zero;return;}
+     if(message.Msg==0x0317||message.Msg==0x0318){PaintTo(message.WParam);message.Result=IntPtr.Zero;return;}
+     // The retained frame paints the entire surface without background flicker.
+     if(message.Msg==0x0014){message.Result=new IntPtr(1);return;}
      bool ended=message.Msg==0x0082;base.WndProc(ref message);if(ended)context.ExitThread();
    }
  }
@@ -44,7 +60,7 @@ class InstallerThemeUI {
    return unchecked((int)value.ToUInt32());
  }
  [STAThread] static int Main(string[] args){
-   IntPtr page=IntPtr.Zero,progress=IntPtr.Zero,art=IntPtr.Zero,current=IntPtr.Zero;
+   IntPtr page=IntPtr.Zero,progress=IntPtr.Zero,art=IntPtr.Zero;
    Bitmap sprite=null;Process parent=null;System.Windows.Forms.Timer timer=null;ApplicationContext context=null;Artwork window=null;bool failed=false;
    try{
      Trace("startup; argument count="+args.Length);
@@ -74,19 +90,21 @@ class InstallerThemeUI {
        int low=ReadProgress(progress,0x0407,1),high=ReadProgress(progress,0x0407,0),position=ReadProgress(progress,0x0408,0);
        int percent=high>low?(int)(((long)position-low)*100/(high-low)):0;percent=Math.Max(0,Math.Min(100,percent));
        if(percent==last)return;
-       IntPtr next;using(var frame=sprite.Clone(new Rectangle(0,percent*232,200,232),PixelFormat.Format24bppRgb))next=frame.GetHbitmap();
-       IntPtr old=SendMessage(art,0x0172,IntPtr.Zero,next);
-       if(old!=IntPtr.Zero&&old!=current)DeleteObject(old);if(current!=IntPtr.Zero)DeleteObject(current);current=next;
+       // Keep one managed bitmap alive until the next frame replaces it. Both
+       // screen paints and PrintWindow render this same owned image directly.
+       window.SetFrame(sprite.Clone(new Rectangle(0,percent*232,200,232),PixelFormat.Format24bppRgb));
+       if(window.Failed)throw new InvalidOperationException("Artwork paint failed; retaining native progress fallback.");
        if(last<0&&!SetWindowPos(art,IntPtr.Zero,0,0,0,0,0x53))throw new InvalidOperationException("Could not show initialized artwork above native fallback.");
+       if(window.Failed)throw new InvalidOperationException("Artwork first display failed; retaining native progress fallback.");
        last=percent;
        Trace("native frame="+percent);
      };
      timer=new System.Windows.Forms.Timer();timer.Interval=120;timer.Tick+=delegate{try{update();}catch(Exception error){Trace(error.GetType().Name+": "+error.Message);failed=true;context.ExitThread();}};
-     update();timer.Start();Application.Run(context);return failed?1:0;
+     update();timer.Start();Application.Run(context);return failed||window.Failed?1:0;
    }catch(Exception error){Trace(error.GetType().Name+": "+error.Message);return 1;}
    finally{
      if(timer!=null)timer.Dispose();if(IsWindow(page)&&GetProp(page,Property)==art)RemoveProp(page,Property);
-     if(IsWindow(art))DestroyWindow(art);if(current!=IntPtr.Zero)DeleteObject(current);
+     if(IsWindow(art))DestroyWindow(art);if(window!=null)window.DisposeFrame();
      if(sprite!=null)sprite.Dispose();if(parent!=null)parent.Dispose();if(window!=null)window.ReleaseHandle();if(context!=null)context.Dispose();
    }
  }

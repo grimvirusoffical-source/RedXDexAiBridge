@@ -38,6 +38,10 @@ Function RedXThemeShow
   ${EndIf}
   SetCtlColors $HWNDPARENT F5F0F2 101014
   SetCtlColors $RedXPage F5F0F2 101014
+  ; Parent background/status repaints must not wipe its foreign-process canvas.
+  System::Call 'user32::GetWindowLongW(p $RedXPage,i -16) i .r0'
+  IntOp $0 $0 | 0x02000000
+  System::Call 'user32::SetWindowLongW(p $RedXPage,i -16,i r0)'
   System::Call 'dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i 20, *i 1, i 4) i .r0'
   System::Call 'user32::SetWindowPos(p $HWNDPARENT,p 0,i 0,i 0,i 640,i 430,i 6)'
   System::Call 'user32::SetWindowPos(p $RedXPage,p 0,i 16,i 58,i 608,i 312,i 4)'
