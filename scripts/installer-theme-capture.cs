@@ -34,8 +34,18 @@ class InstallerThemeCapture {
  [DllImport("user32.dll")] static extern int GetSystemMetrics(int metric);
  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window,int attribute,out Rect rect,int size);
- static int frameRetries;
- static Bitmap CaptureValidArtwork(IntPtr art,Dictionary<string,int> canonical,string evidenceStem,out int frame){
+ static int frameRetries,desktopFrames;
+ static Bitmap CaptureDesktopArtwork(IntPtr art,IntPtr fixture,int owner){
+   if(!Environment.UserInteractive||!IsWindowVisible(art)||GetAncestor(art,2)!=fixture)return null;
+   uint fixtureOwner;GetWindowThreadProcessId(fixture,out fixtureOwner);if(fixtureOwner!=(uint)owner)return null;
+   Rect rect;GetWindowRect(art,out rect);var desktop=new Rect{Left=GetSystemMetrics(76),Top=GetSystemMetrics(77)};desktop.Right=desktop.Left+GetSystemMetrics(78);desktop.Bottom=desktop.Top+GetSystemMetrics(79);
+   if(rect.Right-rect.Left!=200||rect.Bottom-rect.Top!=232||!Contains(desktop,rect))return null;
+   if(!Unobscured(fixture,rect)){if(!SetWindowPos(fixture,new IntPtr(-1),0,0,0,0,0x13))return null;Thread.Sleep(50);if(!Unobscured(fixture,rect))return null;}
+   var image=new Bitmap(200,232,PixelFormat.Format32bppArgb);
+   try{using(var graphics=Graphics.FromImage(image))graphics.CopyFromScreen(rect.Left,rect.Top,0,0,image.Size,CopyPixelOperation.SourceCopy);MakeOpaque(image);if(!Unobscured(fixture,rect)){image.Dispose();return null;}return image;}
+   catch(System.ComponentModel.Win32Exception){image.Dispose();return null;}
+ }
+ static Bitmap CaptureValidArtwork(IntPtr art,IntPtr fixture,int owner,Dictionary<string,int> canonical,string evidenceStem,out int frame){
    // A newly shown cross-process HWND may answer PrintWindow before its first
    // paint has settled. Retry only briefly; every accepted image must match
    // a complete genuine sprite frame exactly, with unchanged progress checks.
@@ -44,7 +54,18 @@ class InstallerThemeCapture {
      if(canonical.TryGetValue(hash,out frame))return image;
      image.Save(evidenceStem+".unexpected.png",ImageFormat.Png);
      File.AppendAllText(evidenceStem+".retries.jsonl",new JavaScriptSerializer().Serialize(new{attempt=attempt,sha256Rgb=hash,width=image.Width,height=image.Height,utc=DateTime.UtcNow.ToString("O")})+Environment.NewLine);
-     image.Dispose();frameRetries++;Thread.Sleep(50);
+     image.Dispose();frameRetries++;
+     // Some Win32 child windows paint correctly on the desktop but return only
+     // background to PrintWindow. Verify actual displayed pixels independently.
+     var screen=CaptureDesktopArtwork(art,fixture,owner);
+     if(screen!=null){
+       screen.Save(evidenceStem+".desktop.png",ImageFormat.Png);
+       if(canonical.TryGetValue(Hash(screen),out frame)){
+         desktopFrames++;File.AppendAllText(evidenceStem+".retries.jsonl",new JavaScriptSerializer().Serialize(new{captureMode="desktopCanvas",frame=frame,utc=DateTime.UtcNow.ToString("O")})+Environment.NewLine);return screen;
+       }
+       screen.Dispose();
+     }
+     Thread.Sleep(50);
    }
    throw new Exception("Rendered ring is not a valid generated frame after eight bounded captures; unexpected PNG/hash preserved.");
  }
@@ -67,7 +88,7 @@ class InstallerThemeCapture {
      if(!above)throw new Exception("Artwork is not above the native fallback bar.");
    }
    Rect screenRoot=root,visibleFrame;try{if(DwmGetWindowAttribute(window,9,out visibleFrame,16)==0&&Contains(root,visibleFrame)&&Contains(visibleFrame,bar)&&(!fallback?Contains(visibleFrame,canvas):true))screenRoot=visibleFrame;}catch(EntryPointNotFoundException){}
-   string reason=null,mode=null;bool clear=false;Bitmap result=null;
+   string reason=null,mode=null,childMode=null;bool clear=false;Bitmap result=null;
    if(Environment.UserInteractive){
      var desktop=new Rect{Left=GetSystemMetrics(76),Top=GetSystemMetrics(77)};desktop.Right=desktop.Left+GetSystemMetrics(78);desktop.Bottom=desktop.Top+GetSystemMetrics(79);
      if(!Contains(desktop,screenRoot))reason="fixture outside available desktop";
@@ -93,22 +114,23 @@ class InstallerThemeCapture {
        }
      }
    }else reason="runner has no interactive desktop";
-   if(result!=null)mode="desktopWindowRect";
+   if(result!=null){mode="desktopWindowRect";if(!fallback)childMode="desktopWindowRectCrop";}
    else{
      // PrintWindow(parent) does not consistently compose foreign-process child
      // HWNDs. Preserve both actual captures and label the explicit composition.
      result=Capture(window);result.Save(stem+".parent.png",ImageFormat.Png);
      mode="printWindowParent";
      if(!fallback){
-       int frame;using(var child=CaptureValidArtwork(art,canonical,stem+".child",out frame)){
+       int beforeDesktop=desktopFrames,frame;using(var child=CaptureValidArtwork(art,window,owner,canonical,stem+".child",out frame)){
          if(Math.Abs(frame-native)>15)throw new Exception("Composite source is not a matching actual artwork frame.");
          actualFrame=frame;child.Save(stem+".child.png",ImageFormat.Png);
          using(var graphics=Graphics.FromImage(result))graphics.DrawImageUnscaled(child,canvas.Left-root.Left,canvas.Top-root.Top);
        }
+       childMode=desktopFrames>beforeDesktop?"desktopCanvas":"printWindowChild";
        mode="printWindowComposite";
      }
    }
-   evidence=new{captureMode=mode,desktopUserInteractive=Environment.UserInteractive,desktopUnobscured=clear,desktopFallbackReason=reason,parentProcess=pid,parentBounds=Bounds(root),captureBounds=Bounds(mode=="desktopWindowRect"?screenRoot:root),nativeBounds=Bounds(bar),nativePercent=native,canvasOwner=canvasOwner,canvasBounds=fallback?null:Bounds(canvas),canvasAboveNativeBar=above,canvasFrame=actualFrame,rawParentCapture=mode.StartsWith("printWindow")?Path.GetFileName(stem+".parent.png"):null,rawChildCapture=mode=="printWindowComposite"?Path.GetFileName(stem+".child.png"):null};
+   evidence=new{captureMode=mode,canvasCaptureMode=childMode,desktopUserInteractive=Environment.UserInteractive,desktopUnobscured=clear,desktopFallbackReason=reason,parentProcess=pid,parentBounds=Bounds(root),captureBounds=Bounds(mode=="desktopWindowRect"?screenRoot:root),nativeBounds=Bounds(bar),nativePercent=native,canvasOwner=canvasOwner,canvasBounds=fallback?null:Bounds(canvas),canvasAboveNativeBar=above,canvasFrame=actualFrame,rawParentCapture=mode.StartsWith("printWindow")?Path.GetFileName(stem+".parent.png"):null,rawChildCapture=mode=="printWindowComposite"?Path.GetFileName(stem+".child.png"):null};
    return result;
  }
  static string Hash(Bitmap bitmap) {
@@ -166,7 +188,7 @@ class InstallerThemeCapture {
              if(helper==0||helper==(uint)process.Id)throw new Exception("Artwork must be owned by its separate drawing process.");
              helpers.Add((int)helper);
              // PrintWindow performs cross-process rendering; HBITMAP handles are process-private.
-             using(var image=CaptureValidArtwork(art,canonical,Path.Combine(args[2],"direct-canvas"),out rendered)){}
+             using(var image=CaptureValidArtwork(art,window,process.Id,canonical,Path.Combine(args[2],"direct-canvas"),out rendered)){}
            }
            var text=new StringBuilder(1024);ReadControlText(status,0x000D,new IntPtr(text.Capacity),text);
            positions.Add(native);bool changed=frames.Add(rendered);statuses.Add(text.ToString());samples++;
@@ -201,7 +223,7 @@ class InstallerThemeCapture {
      if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient evidence: exit="+process.ExitCode+", samples="+samples+", frames="+frames.Count+", positions="+positions.Count+", statuses="+statuses.Count+", PNGs="+snapshots+", extraction="+extractionStatus+".");
      if(requireArt&&helpers.Count!=1)throw new Exception("Expected exactly one isolated drawing helper.");
      if(terminate&&(!helperKilled||fallbackSamples<3))throw new Exception("Insufficient progress evidence after forced artwork termination.");
-     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+",\"strictFrameCaptureRetries\":"+frameRetries+"}");
+     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+",\"strictFrameCaptureRetries\":"+frameRetries+",\"actualDesktopFrameCaptures\":"+desktopFrames+"}");
      Console.WriteLine("Native installer theme captures and real progress checks passed.");return 0;
    } catch(Exception error) {Console.Error.WriteLine(error.Message);File.WriteAllText(Path.Combine(args[2],"failure.txt"),error.ToString());return 1;}
    finally {
