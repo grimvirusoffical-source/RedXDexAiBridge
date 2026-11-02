@@ -242,14 +242,26 @@ class RedXAIAccount {
   try{
    const {status,data,cookie}=await this.websiteJSON('login',{body:{login,password},job});
    if(status!==200)throw statusError('manual sign-in',status);
-   if(data.next==='2fa_setup')throw Error('Complete two-factor setup on the Red-XAI website, then sign in again');
-   if(data.next!=='2fa'||typeof data.token!=='string'||data.token.length<12||data.token.length>512||/[\x00-\x1f\x7f]/.test(data.token)||
-      !data.methods||typeof data.methods!=='object'||Array.isArray(data.methods))throw Error('Red-XAI returned an unsupported sign-in challenge');
-   const methods=['totp','call'].filter(method=>data.methods[method]===true);
-   if(!methods.length)throw Error('Red-XAI did not provide a supported 2FA method');
-   job.cookie=cookie;
-   this.manualChallenge={provider:'website-cookie',challenge:data.token,methods,method:methods[0],callRequested:false,job};
-   this.emit();return {requires2fa:true,methods};
+   if(data.next==='2fa_setup')throw Error('The Red-XAI account service requested two-factor setup; password sign-in was not completed');
+   if(data.next==='2fa'){
+    if(typeof data.token!=='string'||data.token.length<12||data.token.length>512||/[\x00-\x1f\x7f]/.test(data.token)||
+       !data.methods||typeof data.methods!=='object'||Array.isArray(data.methods))throw Error('Red-XAI returned an unsupported sign-in challenge');
+    // Match the public site's selector: truthy flags offer TOTP/call; otherwise
+    // it starts a call challenge. These hints never authorize a session.
+    const methods=data.methods.totp?(data.methods.call?['totp','call']:['totp']):['call'];
+    job.cookie=cookie;
+    this.manualChallenge={provider:'website-cookie',challenge:data.token,methods,method:methods[0],callRequested:false,job};
+    this.emit();return {requires2fa:true,methods};
+   }
+   if(data.ok===false||data.success===false||data.error||
+      ['requires2fa','requires2faSetup','twoFactorRequired'].some(key=>Object.hasOwn(data,key)&&data[key]!==false)||
+      (data.next!==undefined&&data.next!==null&&data.next!=='')||
+      (data.token!==undefined&&data.token!==null&&data.token!=='')||
+      (data.challenge!==undefined&&data.challenge!==null&&data.challenge!=='')||
+      (data.pending!==undefined&&(!Array.isArray(data.pending)||data.pending.length)))
+    throw Error('Red-XAI returned an unsupported or unfinished sign-in challenge');
+   if(!cookie)throw Error('Red-XAI did not return a fresh authenticated session cookie');
+   return await this.acceptWebsiteCookie(cookie,'password',job);
   }catch(error){if(this.manualJob===job)this.cancelManual();throw error;}
  }
  async manualCall(){
@@ -278,17 +290,21 @@ class RedXAIAccount {
   try{
    const result=await this.websiteJSON('login/2fa',{body:{method:selected,code},job,freshCookie:true});
    if(result.status!==200)throw statusError('second-factor verification',result.status);
-   const verified=await this.verifyWebsiteCookie({...result.cookie,method:selected},'',job);
-   this.assertManual(job);this.authEpoch++;
-   await this.activate({...verified,provider:'website-cookie',access:'',remember:verified.cookieExpiresMs!==null},'',()=>this.assertManual(job));
-   this.finishManual(job);this.emit();
-   return {signedIn:true,account:this.status().account};
+   return await this.acceptWebsiteCookie(result.cookie,selected,job);
   }catch(error){if(this.manualJob===job)this.cancelManual();throw error;}
   finally{job.busy=false;}
  }
+ async acceptWebsiteCookie(cookie,method,job){
+  this.assertManual(job);
+  const verified=await this.verifyWebsiteCookie({...cookie,method},'',job);
+  this.assertManual(job);this.authEpoch++;
+  await this.activate({...verified,provider:'website-cookie',access:'',remember:verified.cookieExpiresMs!==null},'',()=>this.assertManual(job));
+  this.finishManual(job);this.emit();
+  return {signedIn:true,account:this.status().account};
+ }
  async verifyWebsiteCookie(record,expected='',job=null){
   const now=this.now();
-  if(!COOKIE_TOKEN.test(record.refresh)||!['totp','call'].includes(record.method)||
+  if(!COOKIE_TOKEN.test(record.refresh)||!['totp','call','password'].includes(record.method)||
      (record.cookieExpiresMs!==null&&(!Number.isSafeInteger(record.cookieExpiresMs)||record.cookieExpiresMs<=now))||
      (record.accountExpiresMs!==undefined&&(!Number.isSafeInteger(record.accountExpiresMs)||record.accountExpiresMs<=now)))
    throw Error('Red-XAI saved session is invalid or expired');
@@ -296,7 +312,8 @@ class RedXAIAccount {
   if(status!==200)throw statusError('account verification',status);
   const account=data.account,amr=data.amr;
   if(!account||!isSub(account.id)||(expected&&account.id!==expected)||!Array.isArray(amr)||amr.length>32||
-     !amr.every(x=>typeof x==='string'&&/^[a-z][a-z0-9_-]{0,63}$/.test(x))||!amr.includes('pwd')||!amr.includes(record.method==='totp'?'otp':'call')||
+     !amr.every(x=>typeof x==='string'&&/^[a-z][a-z0-9_-]{0,63}$/.test(x))||!amr.includes('pwd')||
+     (record.method!=='password'&&!amr.includes(record.method==='totp'?'otp':'call'))||
      !Number.isSafeInteger(data.expiresMs)||data.expiresMs<=this.now())throw Error('Red-XAI could not verify the authenticated account and second factor');
   for(const value of [data,account]){
    if((value.active!==undefined&&value.active!==true)||(value.status!==undefined&&value.status!=='active')||
