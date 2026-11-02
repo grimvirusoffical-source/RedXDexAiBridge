@@ -194,6 +194,23 @@ if(process.argv.includes('--vortex-diagnostic')){
    win.show();
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
+   if(CI_SMOKE&&process.platform==='win32'&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted'&&process.env.RUNNER_OS==='Windows'){
+    // Electron capturePage can block its Windows CI main loop before a JS
+    // timeout can run. Capture only this owned fixture through a bounded GDI
+    // child process; production screenshot behavior is unchanged.
+    result.uiCaptures=[];
+    for(const page of ['overview','connections','settings']){
+     const visible=await win.webContents.executeJavaScript(`(()=>{document.querySelector('[data-page="'+${JSON.stringify(page)}+'"]')?.click();const element=document.getElementById('page-'+${JSON.stringify(page)});return !!element&&!element.hidden;})()`);
+     if(!visible)throw Error('GUI screenshot page did not open: '+page);
+     const file=path.join(out,page==='overview'?'ui.png':'ui-'+page+'.png');
+     console.error('SMOKE external page capture',page);
+     const metadata=await require('../scripts/gui-smoke-capture.cjs').capture({window:win,output:file});
+     metadata.page=page;metadata.version=result.version;fs.writeFileSync(file.replace(/\.png$/,'.capture.json'),JSON.stringify(metadata,null,2));
+     result.uiCaptures.push({page,file:path.basename(file),captureMode:metadata.captureMode,sha256:metadata.sha256});
+    }
+    if(new Set(result.uiCaptures.map(capture=>capture.sha256)).size!==3)throw Error('GUI screenshots did not show three distinct rendered pages');
+    result.uiCapture=true;result.uiCaptureMode='desktopOwnedClientRect';
+   }else{
    let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
    if(captureError){
     result.uiCapture=false;result.uiCaptureError=captureError.message;
@@ -206,6 +223,7 @@ if(process.argv.includes('--vortex-diagnostic')){
      // complete build: the separate native smoke exercises real desktop input.
      result.desktopCaptureFallback=false;result.desktopCaptureError=error.message;
     }
+   }
    }
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
    quitting=true;app.exit(0);return;

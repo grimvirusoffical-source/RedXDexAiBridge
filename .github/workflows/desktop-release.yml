@@ -59,6 +59,8 @@ jobs:
         run: |
           $env:REDXDEX_DATA_DIR = Join-Path $env:RUNNER_TEMP 'bridge-gui-data'
           $env:REDXDEX_SMOKE_OUTPUT = Join-Path $pwd 'verification/gui'
+          node scripts/gui-smoke-capture.cjs --build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\node_modules\.bin\electron.cmd .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:REDXDEX_SMOKE_OUTPUT
