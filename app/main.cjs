@@ -2,11 +2,12 @@
 const path=require('node:path'),fs=require('node:fs'),os=require('node:os'),crypto=require('node:crypto'),cp=require('node:child_process');
 const {pathToFileURL}=require('node:url');
 const {atomicRename}=require('./atomic-rename.cjs');
-const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImage,shell,clipboard}=require('electron');
+const {app,BrowserWindow,ipcMain,dialog,safeStorage,session,Tray,Menu,nativeImage,shell,clipboard,Notification}=require('electron');
 if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!process.env.REDXDEX_SMOKE_OUTPUT))throw Error('Self-test requires isolated data and output folders');
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
 let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,quitting=false;const activity=[];
+let lastNotifiedHandoffUrl=null;
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
 app.setName('RedXDexAiBridge');
@@ -54,7 +55,22 @@ if(process.argv.includes('--vortex-diagnostic')){
   clients=new ClientStore(path.join(core.root,'clients.json'));
   approvals=new ApprovalQueue({emit:items=>{emit('approvals',items);if(items.length){app.dock?.bounce('informational');}}});
   oauth=new OAuthService({file:path.join(core.root,'oauth.json'),clients,approvals,onClient:defaultClient});
-  tunnel=new Tunnel(s=>{if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);},{root:core.root});
+  tunnel=new Tunnel(s=>{
+   if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;
+   atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);
+   // Only notify when the relay has passed its OAuth metadata verification.
+   // User-triggered clipboard handoff is separate from OAuth approval.
+   if(require('./chatgpt-handoff.cjs').newEndpoint(lastNotifiedHandoffUrl,s)){
+    lastNotifiedHandoffUrl=s.url;
+    if(app.isPackaged&&!process.env.REDXDEX_SMOKE_OUTPUT&&Notification.isSupported()){
+     try{
+      const note=new Notification({title:'Red-XAI Bridge connection ready',body:'Open Bridge → AI connections → Copy for ChatGPT to update your private plugin.'});
+      note.on('click',()=>{show();win?.webContents.executeJavaScript("document.querySelector('[data-page=\\\"connections\\\"]')?.click()").catch(()=>{});});
+      note.show();
+     }catch{}
+    }
+   }
+  },{root:core.root});
   const prefsFile=path.join(app.getPath('userData'),'updates.json');const prefs={get:()=>{try{return JSON.parse(fs.readFileSync(prefsFile)).autoDownload;}catch{return true;}},set:(_,value)=>atomicJSON(prefsFile,{autoDownload:value})};
   updateController=createUpdateController({app,autoUpdater:require('electron-updater').autoUpdater,store:prefs,emit:s=>emit('updates:state',s)});updateController.init();
   session.defaultSession.setPermissionRequestHandler((_w,_p,cb)=>cb(false));session.defaultSession.setPermissionCheckHandler(()=>false);
@@ -197,6 +213,11 @@ if(process.argv.includes('--vortex-diagnostic')){
  ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();core.crawlJobs.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
  ipc('remote:start',async()=>{await startGateway();const status=await tunnel.start(gateway.url);if(status.phase!=='error')rememberRemote(true);return status;});
  ipc('remote:stop',()=>{rememberRemote(false);return tunnel.stop();});
+ ipc('remote:chatgpt-handoff',()=>{
+  const message=require('./chatgpt-handoff.cjs').instructionsForChatGPT(tunnel.status());
+  clipboard.writeText(message);
+  return {copied:true,url:tunnel.status().url,message:'Connection instructions copied. Paste them in ChatGPT to reconnect your existing private Bridge plugin. OAuth approval may be required.'};
+ });
  ipc('native:status',async()=>{const helper=await native.control({action:'status'}).catch(e=>({error:e.message}));const status=process.platform==='darwin'?require('electron').systemPreferences.getMediaAccessStatus('screen'):'unknown';return native.permissionStatus(helper,status);});
  ipc('native:settings',section=>{
   if(!['accessibility','screen'].includes(section))throw Error('Unknown settings section');

@@ -1,5 +1,12 @@
 # Red-XAI Bridge
 
+
+## Copy this computer's connection into ChatGPT (0.10.13)
+
+In **Connections**, click **Create HTTPS link on this PC**, or let the previously enabled remote connection start with the app. Wait for **ONLINE**. Then click **Copy for ChatGPT** and paste the copied message into ChatGPT while working with your existing private Red-XAI Bridge plugin. ChatGPT can use authorized plugin-editing tools to update the plugin's stored MCP URL and ask for OAuth approval if needed. Neither the message nor the URL contains credentials. The app does not automatically edit ChatGPT plugins, and a plain message without plugin-editing access cannot reconnect one.
+
+The app highlights a newly verified URL and may display a desktop notification. Temporary Cloudflare URLs change when the tunnel is recreated, so repeat the copy/paste workflow after a change. Set up a stable private relay or domain for an unchanged address.
+
 ## One computer, one private MCP endpoint (Windows, macOS and Linux)
 
 **Do not publish the MCP URL of one person's desktop as a universal plugin endpoint.** Each person installs Red-XAI Bridge on their own computer, starts its local loopback MCP gateway, and pairs only the clients they approve. A remote ChatGPT connection uses that computer's own HTTPS MCP URL and OAuth pairing approval; the URL is not shared between unrelated users. The desktop app stores client credentials, per-client permissions and device identity locally, with no automatic cross-device control.
