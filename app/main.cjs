@@ -227,6 +227,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  });
  ipc('tool:interactive',(name,args)=>core.perform(name,args,{clientId:'desktop',interactive:true}));
  ipc('clipboard:write',text=>{if(typeof text!=='string'||text.length>65536)throw Error('Invalid clipboard text');clipboard.writeText(text);return true;});
+ ipc('resource:open',key=>{const resources={website:'https://red-xai.com',releases:'https://github.com/grimvirusoffical-source/RedXDexAiBridge/releases',source:'https://github.com/grimvirusoffical-source/RedXDexAiBridge',issues:'https://github.com/grimvirusoffical-source/RedXDexAiBridge/issues'};if(!Object.hasOwn(resources,key))throw Error('Unknown resource');return shell.openExternal(resources[key]);});
  ipc('app:version',()=>({version:app.getVersion(),platform:process.platform,arch:process.arch}));
  ipc('updates:status',()=>updateController.status());ipc('app:updates',()=>checkUpdates());ipc('updates:download',async()=>{await configureUpdateFeed();await updateController.download();return updateController.status();});
  ipc('updates:install',()=>{quitting=true;try{return updateController.install();}catch(e){quitting=false;throw e;}});ipc('updates:auto',v=>updateController.setAutoDownload(v));

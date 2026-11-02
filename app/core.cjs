@@ -15,6 +15,7 @@ const {assertExecution,backgroundOnly,DesktopLease,FOCUS_ACTIONS}=require("./exe
 const desktopLease=new DesktopLease();
 const native=require('./native.cjs');
 const configPath=path.join(root,'settings.json');
+const {permissionMode,permissionStatus}=require('./permission-policy.cjs');
 const defaults={directories:[], permissions:{list:true,read:false,write:false,terminal:false,crawl:false,screenshot:false,mouse:false,keyboard:false,apps:false}, maxReadBytes:1048576, maxOutputBytes:65536, emergencyStop:false, clientPolicies:{}, keepRunning:true, launchAtLogin:false, startHidden:false, backgroundOnly:false, clientExecution:{}, maxProcesses:32, maxProcessesPerClient:8, maxConcurrentRequests:64, maxRequestsPerClient:16};
 const MAX_LIMIT=8*1024*1024;
 function settings(){try {const c=JSON.parse(fs.readFileSync(configPath,'utf8'));return {...defaults,...c,permissions:{...defaults.permissions,...c.permissions},directories:Array.isArray(c.directories)?c.directories:[],clientPolicies:c.clientPolicies&&typeof c.clientPolicies==='object'&&!Array.isArray(c.clientPolicies)?c.clientPolicies:{}};}catch{return structuredClone(defaults);}}
@@ -28,9 +29,7 @@ async function ensurePermission(name,context={}){
  // its individual policy is missing (for example after a migration or crash).
  // Keep the legacy local stdio fallback; authenticated remote/local AI clients
  // require their own explicit policy or a fresh, owner-visible approval.
- const individual=s.clientPolicies[id]?.[name];
- const localLegacy=id==='local'&&context.transport!=='http';
- const mode=individual??(localLegacy?(s.permissions[name]?'always':'deny'):(s.permissions[name]?'ask':'deny'));
+ const mode=permissionMode(s,name,id,context.transport);
  if(mode==='deny')throw Error('Permission disabled: '+name);
  if(mode==='ask'){
   if(!context.authorize)throw Error('Approval required: open the desktop app to answer this request');
@@ -100,7 +99,7 @@ if(name==='get_profile'){
  const value={id:profile.id,name:'RedXDexAiBridge on '+os.hostname(),nickname:os.hostname()};
  return {text:JSON.stringify(value),structuredContent:value};
 }
-if(name==='bridge_status'){const s=settings();return {text:JSON.stringify({app:'RedXDexAiBridge',version:require('../package.json').version,platform:process.platform,transport:context.transport||'stdio',clientId,emergencyStop:s.emergencyStop,permissions:s.permissions,clientPermissions:s.clientPolicies[clientId]||{},backgroundOnly:backgroundOnly(s,clientId),desktopLease:desktopLease.status(clientId),concurrency:{processes:s.maxProcesses,processesPerClient:s.maxProcessesPerClient,requests:s.maxConcurrentRequests,requestsPerClient:s.maxRequestsPerClient},background:{keepsRunningWhenHidden:s.keepRunning,launchAtLogin:s.launchAtLogin,continuesAfterQuit:false,terminalJobs:processes.list(clientId).filter(p=>p.running).length,crawlJobs:crawlJobs.list(clientId).filter(j=>j.status==='running'||j.status==='queued').length},approvedFolders:s.directories},null,2)};}
+if(name==='bridge_status'){const s=settings();return {text:JSON.stringify({app:'RedXDexAiBridge',version:require('../package.json').version,platform:process.platform,transport:context.transport||'stdio',clientId,emergencyStop:s.emergencyStop,...permissionStatus(s,clientId,context.transport),backgroundOnly:backgroundOnly(s,clientId),desktopLease:desktopLease.status(clientId),concurrency:{processes:s.maxProcesses,processesPerClient:s.maxProcessesPerClient,requests:s.maxConcurrentRequests,requestsPerClient:s.maxRequestsPerClient},background:{keepsRunningWhenHidden:s.keepRunning,launchAtLogin:s.launchAtLogin,continuesAfterQuit:false,terminalJobs:processes.list(clientId).filter(p=>p.running).length,crawlJobs:crawlJobs.list(clientId).filter(j=>j.status==='running'||j.status==='queued').length},approvedFolders:s.directories},null,2)};}
 if(name==='list_files'){await ensurePermission('list',context);const p=allowedPath(args.path);return{text:JSON.stringify(fs.readdirSync(p,{withFileTypes:true}).slice(0,500).map(e=>({name:e.name,type:e.isDirectory()?'directory':'file'})),null,2)};}
 if(name==='read_text_file'){await ensurePermission('read',context);const p=allowedPath(args.path);const fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));try{const stat=fs.fstatSync(fd);if(!stat.isFile())throw Error('Target must be a regular file');if(stat.size>settings().maxReadBytes)throw Error('File exceeds read size limit');const content=fs.readFileSync(fd,'utf8');if(Buffer.byteLength(content)>settings().maxReadBytes)throw Error('File exceeds read size limit');return{text:content};}finally{fs.closeSync(fd)}}
 if(name==='write_text_file'){await ensurePermission('write',context);if(typeof args.content!=='string'||Buffer.byteLength(args.content)>settings().maxReadBytes)throw Error('Invalid or oversized content');const p=writePath(args.path);const flags=fs.constants.O_WRONLY|fs.constants.O_CREAT|(fs.constants.O_NOFOLLOW||0);const fd=fs.openSync(p,flags,0o600);try{if(!fs.fstatSync(fd).isFile())throw Error('Target must be a regular file');fs.ftruncateSync(fd,0);fs.writeFileSync(fd,args.content);}finally{fs.closeSync(fd)}return{text:'Saved '+p};}
