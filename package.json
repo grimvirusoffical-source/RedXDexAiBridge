@@ -1,6 +1,6 @@
 {
   "name": "redxdex-ai-bridge",
-  "version": "0.10.16",
+  "version": "0.11.0",
   "private": true,
   "description": "Red-XAI Bridge — permission-controlled MCP desktop tools for macOS, Windows and Linux",
   "main": "app/main.cjs",
@@ -9,7 +9,7 @@
     "mcp": "node app/mcp.cjs",
     "test": "node scripts/test.cjs",
     "package:mac": "npm run prepare:native && npm run prepare:tunnel && electron-builder --mac dmg zip --arm64 --config.forceCodeSigning=true --publish never",
-    "package:win": "npm run prepare:native && npm run prepare:tunnel && electron-builder --win nsis --x64 --publish never",
+    "package:win": "npm run prepare:native && npm run prepare:tunnel && node scripts/prepare-installer-template.cjs && electron-builder --win nsis --x64 --publish never",
     "package:linux": "npm run prepare:tunnel && electron-builder --linux AppImage deb --x64 --publish never",
     "prepare:native": "node scripts/build-native.cjs",
     "check": "node scripts/check.cjs && npm test",
@@ -101,8 +101,8 @@
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
       "artifactName": "RedXDexAiBridge-${version}-windows-${arch}-setup.${ext}",
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
+      "installerIcon": "build/installer-icon.ico",
+      "uninstallerIcon": "build/installer-icon.ico",
       "include": "build/installer.nsh"
     },
     "linux": {

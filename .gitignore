@@ -17,3 +17,5 @@ node_modules
 # Local repair build and verification outputs
 verification/
 ci-errors.log
+build/installer-theme/
+services/bridge-platform/node_modules/

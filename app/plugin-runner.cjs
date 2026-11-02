@@ -1,0 +1,27 @@
+'use strict';
+const crypto=require('node:crypto');
+function verifyLicense(license,publicKey,{sub,deviceId,pluginId,now=Date.now()}={}){
+ const [encoded,signature,...extra]=String(license?.token||'').split('.');if(extra.length||!encoded||encoded.length>8192||!signature||Buffer.from(signature,'base64url').length!==64||!crypto.verify(null,Buffer.from(encoded),publicKey,Buffer.from(signature,'base64url')))throw Error('Plugin license could not be verified');
+ const p=JSON.parse(Buffer.from(encoded,'base64url').toString());if(p.issuer!=='https://red-xai.com'||p.app!=='bridge'||p.kind!=='plugin'||p.sub!==sub||p.deviceId!==deviceId||p.pluginId!==pluginId||!Number.isSafeInteger(p.issuedMs)||!Number.isSafeInteger(p.expiresMs)||p.expiresMs<=p.issuedMs||p.expiresMs-p.issuedMs>1800000||p.expiresMs<=now||p.issuedMs>now+30000)throw Error('This plugin license is not active for this account and device');return p;
+}
+class PluginRunner{
+ constructor({platform,perform,loadSecret,saveSecret}={}){Object.assign(this,{platform,perform,loadSecret,saveSecret});}
+ async listCheckpoints(){const identity=await this.platform.identity(),device=await this.platform.keys();const records=JSON.parse(await this.loadSecret('plugin-checkpoints')||'[]');return{checkpoints:records.filter(r=>r.sub===identity.sub&&r.deviceId===device.deviceId).map(r=>({id:r.id,at:r.at,files:r.files.length}))};}
+ async run({pluginId,path,url,files=[],command,args=[],action='run',checkpointId}={},context={}){
+  if(!['run','restore'].includes(action))throw Error('Unknown plugin action');
+  const catalog=await this.platform.catalog(),plugin=catalog.plugins?.find(p=>p.id===pluginId);if(!plugin)throw Error('Plugin not found');const identity=await this.platform.identity(),device=await this.platform.keys();const license=await this.platform.call('/plugins/license',{pluginId});verifyLicense(license,catalog.licensePublicKey,{sub:identity.sub,deviceId:device.deviceId,pluginId});
+  const call=(name,input)=>this.perform(name,input,context),report={pluginId,deviceId:device.deviceId,steps:[]};
+  if(action==='restore'){if(!plugin.recipe.includes('task.checkpoint'))throw Error('This plugin cannot restore checkpoints');const records=JSON.parse(await this.loadSecret('plugin-checkpoints')||'[]');const record=records.find(r=>r.id===checkpointId&&r.sub===identity.sub&&r.deviceId===device.deviceId);if(!record)throw Error('Checkpoint not found for this device');const checkTarget=async f=>{try{const info=JSON.parse((await call('file_info',{path:f.path})).text);if(info.path!==f.path||info.type!=='file')throw Error('Checkpoint target changed to a different file');}catch(e){if(e.code!=='ENOENT')throw e;}};for(const f of record.files)await checkTarget(f);for(const f of record.files){await checkTarget(f);await call('write_text_file',{path:f.path,content:f.content});}return{restored:record.files.length,checkpointId};}
+  for(const step of plugin.recipe){
+   if(step==='workspace.inspect'){const r=await call('list_files',{path});report.steps.push({step,entries:JSON.parse(r.text)});}
+   else if(step==='cleanup.preview'){const r=await call('search_files',{path,sort:'size',limit:20});report.steps.push({step,previewOnly:true,...JSON.parse(r.text)});}
+   else if(step==='crawler.collect'){const started=JSON.parse((await call('crawl_start',{url,maxPages:5,maxDepth:1})).text);let r;for(let n=0;n<750;n++){r=JSON.parse((await call('crawl_status',{id:started.id})).text);if(!['queued','running'].includes(r.status))break;await new Promise(ok=>setTimeout(ok,250));}if(['queued','running'].includes(r.status)){await call('crawl_stop',{id:started.id});throw Error('Plugin crawl timed out');}report.steps.push({step,...JSON.parse((await call('crawl_results',{id:started.id})).text)});}
+   else if(step==='task.checkpoint'){if(!Array.isArray(files)||!files.length||files.length>20)throw Error('Select one to twenty approved text files for the checkpoint');const values=[];let bytes=0;for(const file of files){const before=JSON.parse((await call('file_info',{path:file})).text);if(before.type!=='file')throw Error('Checkpoint target must be a regular file');const content=(await call('read_text_file',{path:before.path})).text;bytes+=Buffer.byteLength(content);if(bytes>5*1024*1024)throw Error('Checkpoint is larger than 5 MiB');const after=JSON.parse((await call('file_info',{path:file})).text);if(after.path!==before.path||after.type!=='file'||after.size!==before.size||after.modified!==before.modified)throw Error('Checkpoint file changed while being read; try again');values.push({path:before.path,content});}const records=JSON.parse(await this.loadSecret('plugin-checkpoints')||'[]'),id=crypto.randomUUID();records.push({id,sub:identity.sub,deviceId:device.deviceId,at:Date.now(),files:values});while(records.length>20)records.shift();if(Buffer.byteLength(JSON.stringify(records))>20*1024*1024)throw Error('Checkpoint storage is full');await this.saveSecret('plugin-checkpoints',JSON.stringify(records));report.steps.push({step,id,files:values.length});}
+   else if(step==='build.verify'){if(command){const result=await call('run_command',{command,args,cwd:path});report.steps.push({step,output:result.text});}else report.steps.push({step,requiresCommand:true});}
+   else if(['workspace.report','research.export','task.report','release.prepare'].includes(step))report.steps.push({step,completed:true});
+   else throw Error('Unsupported plugin action');
+  }
+  return report;
+ }
+}
+module.exports={PluginRunner,verifyLicense};

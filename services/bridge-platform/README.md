@@ -1,0 +1,74 @@
+# Bridge platform service
+
+This module owns Bridge app membership, the shop catalog, device plugin grants, Axiom balances, weekly work leases, legal acceptance and app moderation. It does not replace the existing Red-XAI account service or its MFA/session checks.
+
+## Run the regression checks
+
+```sh
+node --test services/bridge-platform/platform.test.cjs services/bridge-platform/http.test.cjs
+```
+
+The tests use isolated identity, payment and storage fixtures. They exercise privilege boundaries, real Ed25519 signatures and replay protection, one-device license binding, owner benefits, atomic payment idempotency, refunds/debt allocation, bounded time reservations, crawler limits, expiry, moderation protection and HTTP input isolation. They do not establish a live deployment or real payment processing.
+
+## Production integration
+
+Instantiate `RedXStore` with an existing scoped server-only account database credential. It uses `redxai_accounts`, a separate `rxa-bridge-platform.red-xai.db` file and guarded BoxQL revision transactions. It never overwrites a canonical account/password/MFA record. `MemoryStore` is for tests; `FileStore` requires explicit development mode. `createPlatform({production:true})` refuses either development store.
+
+Pass a private Ed25519 signing key and an independent random 32-byte-or-longer IP-HMAC key from protected server configuration. Do not ship them to Electron or put them in plugin manifests. Configure `ownerSubjects` with verified canonical subject IDs in the existing production realm. Ownership requires both that configuration and a fresh authoritative owner/MFA result from `resolvePrivileges`; a username, email match, JSON flag or public Quick Login profile cannot establish ownership. The production website realm is not automatically interchangeable with the separate `red-xai-accounts` OIDC realm.
+
+`createNativeAuthenticator` verifies Quick Login `bridge.app` tokens at the existing live userinfo endpoint, or manual `X-RedX-Session` credentials at the existing account `me` endpoint. It accepts `trustedIP(req)` only from a correctly configured reverse proxy. Do not trust arbitrary forwarded-IP headers. `resolvePrivileges` is a server adapter, not a request-body decoder; it must prove MFA/authentication time and any owner or recovery permission through the actual identity authority. Missing proof leaves those capabilities disabled.
+
+Create the HTTP handler with `createHandler({platform,authenticate,verifyCSRF,extraRoutes,rawWebhook})`. The default URL prefix is `/redxai-bridge/api`. Keep the process bound to loopback behind the existing HTTPS proxy, preserve original `Host: red-xai.com`, and preserve the existing site's unrelated routing. Browser writes require the configured same-origin CSRF verifier. Native calls use bearer/session headers and device signatures. Wrong Host and cross-origin calls are refused.
+
+Every device is enrolled with an Ed25519 public key and a single-use challenge. The private device key belongs in OS-protected encrypted credential storage. Protected requests send:
+
+* `X-Bridge-Device`: SHA-256 of the normalized public SPKI PEM.
+* `X-Bridge-Time`: current Unix milliseconds.
+* `X-Bridge-Nonce`: at least 20 random base64url characters.
+* `X-Bridge-Signature`: Ed25519 signature, base64url encoded, over `METHOD + '\n' + pathAndQuery + '\n' + SHA256(rawBody) + '\n' + timeMs + '\n' + nonce`.
+
+The verifier enforces a bounded clock window and persistent replay nonces. A plugin token is also signed and bound to the canonical account and device key. Obtaining a license for another device requires a separate grant or a verified recovery. Before executing a paid plugin, obtain/validate a current online license; an old signed token alone is insufficient to ignore a refund or recovery revocation. This is cryptographic key binding, not a claim of tamperproof hardware attestation.
+
+## Work leases and weekly quotas
+
+The configured six paid tiers plus Free reset at Monday 00:00 UTC. `/usage/start` reserves at most 15 seconds of the remaining active-work budget before a task runs. The client must heartbeat every 10 seconds; each accepted heartbeat settles elapsed time, refunds unused reservation and reserves the next bounded window. `/usage/stop` settles the final actual elapsed interval and releases the unused remainder. Idle time after stop is not charged. One account can hold one active metering session, so overlapping local tasks must share that session and charge the union of active time once. Crawler pages are debited separately before fetching.
+
+The gateway/process manager must refuse a task without a valid lease and cancel/restrict background execution when the lease expires, connectivity is lost, a ban is returned, or a quota is exhausted. Ruby has unlimited active minutes, but still needs authenticated leases and retains crawler/concurrency safety limits. A modified local desktop cannot be made tamperproof by a server heartbeat; no remote hardware-attestation claim is made.
+
+## Payments and Axioms
+
+Root's Stripe integration owns Checkout, Billing, raw webhook signature verification and account configuration. Do not expose `applyPayment`, `syncSubscription` or `applyRefund` as client-callable HTTP operations. The success page does not fulfill purchases. The verified provider adapter obtains the authoritative order with `getOrder(orderId)` and calls:
+
+```js
+await platform.applyPayment({verified:true,paid:true,eventId,checkoutSessionId,
+  orderId,sub,deviceId,amountCents,currency:'usd',subscriptionId,periodEndMs});
+await platform.syncSubscription({verified:true,eventId,sub,subscriptionId,
+  status,tier,periodEndMs});
+await platform.applyRefund({verified:true,eventId,checkoutSessionId,totalRefundedCents});
+```
+
+`totalRefundedCents` is cumulative per original Checkout payment; out-of-order and duplicate refund events cannot double-debit. Axiom amounts are integer hundredths, with $1 = 1 AX and a minimum purchase of $5.01. They cannot be transferred or cashed out. Credits retain funding lots. A refund removes unspent AX; spent refunded allocations become debt and affected plugins are suspended until that debt is repaid. Full direct plugin refunds revoke its allocations. Financial history stays in the audited ledger after active entitlements expire or are removed.
+
+Before creating a new paid Checkout session, call `authorizePurchase(actor)` to recheck current legal/device/ban state and block owner charges, then require the order subject/device to match the caller. Use the order ID as the provider Checkout idempotency key. `withBillingState(fn)` offers a serialized, guarded transaction for provider customer/session mappings; the callback must be side-effect-free because a storage conflict can retry it. Never perform an external charge inside that callback. `RedXStore` accepts a separate `recordKey` if provider mappings need another record.
+
+Owner benefits are verified server-side: all catalog plugins and all tier benefits free, unlimited enrolled devices, no expiry. They do not mint an infinite AX balance and cannot create Checkout orders. Admins receive no owner purchase benefits.
+
+## Moderation, identity and legal boundaries
+
+Owner-only plugin publishing accepts deterministic allowlisted recipe actions, not executable uploaded code. Only owner/MFA sessions can upload a raster image or edit products. Images are limited to 5 MiB and bounded PNG/JPEG/WebP dimensions/container metadata; active SVG/HTML uploads are refused. The media server must send the returned MIME type, `X-Content-Type-Options: nosniff`, a restrictive CSP and immutable content-hash URLs.
+
+Admins can moderate regular Bridge members, gift/remove entitlements and AX, and search app membership. They cannot target the owner or other admins, grant admin, publish plugins or configure Stripe. IPs are stored as keyed hashes. An authorized exact IP search can match associated hashes, but responses show only counts; raw historical IPs are not disclosed. Shared-IP bans are refused if they would indirectly ban a protected owner/admin.
+
+Global ban/unban and global deletion must delegate to `authority.moderate` / `authority.deleteAccount` using the user's actual central authority and required MFA. They return unavailable rather than fake a global ban or deletion locally. App deletion/reset require `authority.revokeBridgeSession(actor,{allDevices})`; Bridge-only deletion preserves global AX, global subscriptions, purchases and financial history while removing Bridge membership/device/legal state. `/account/join` requires authoritative `freshLoginVerified` proof to rejoin deleted membership, and never resets weekly quota or recovery history. Global deletion also cancels active provider subscriptions before the central account is removed; global deletion requires the explicit `DELETE RED-XAI ACCOUNT` confirmation and the authoritative service's password/MFA checks. Removing a live paid subscription requires `authority.cancelSubscription` to cancel real recurring provider billing before clearing the active entitlement; removing a gift does not cancel unrelated billing.
+
+Supply exactly three versioned legal documents through `legalDocuments` before legal acceptance is available. The client must implement actual scroll-to-bottom and separate Read/Agree checkboxes, then use `/legal/read` and the single-use `/legal/accept` grant. The service records version/device/time; it cannot prove a human actually read prose. Reset revokes the current Bridge session and clears that device's acceptance, requiring sign-in and acceptance again. Draft policies require legal review before making business or recovery guarantees.
+
+## Release readiness
+
+The Stripe adapter's mocked regression checks also cover raw signature rejection, mode and account/device/amount binding, Checkout idempotency, paid-only async fulfillment, cumulative refunds, provider subscription cancellation and ordinary dispute holds. A lost dispute does not become won merely because an incoming event payload says so: the adapter retrieves the provider's current object. Full subscription reversals cancel future recurring billing before acknowledgement. No test here makes a live API call or proves sandbox configuration.
+
+Renewal handling retrieves the current invoice and paginated paid InvoicePayments, validates the account, currency, mode, monthly catalog price, service period and current PaymentIntent, then records an immutable receipt. The initial invoice reuses its Checkout purchase instead of recording a second sale. A reversal arriving before `invoice.paid` discovers these provider allocations first. Shared PaymentIntent reversals allocate cumulative cents proportionally to each receipt, capped by its paid amount; fractional residual cents stay unallocated until a later cumulative reversal. Unknown or incomplete bindings retry with an error. The supported native subscription configuration is one monthly catalog item, quantity one, with no proration or extra invoice lines. Keep portal plan changes, coupons, taxes and extra invoice items disabled until their invoice accounting is implemented and tested; cancellation/payment-method management is supported.
+
+Dispute reconciliation always retrieves the current provider object. Open disputes hold the affected balance/licenses; lost disputes reverse the paid allocation. Pending appeals keep an existing loss reversed. A genuine provider win, prevention or closed warning reinstates only the dispute-loss component, while actual cash refunds remain cumulative. AX reinstatement repays debt before restoring spendable funds, licenses retain device-recovery revocations, and subscription wins restore only an unexpired purchased period without restarting canceled recurring billing. Webhook processing uses a durable five-minute lease and transaction fencing: an expired worker cannot overwrite a newer reconciliation. Retry identity includes the current provider result, so a retried older notification can still reconcile a newer provider state. Regression tests cover these paths with injected provider objects and no real charges. Provider contracts: [Dispute](https://docs.stripe.com/api/disputes/object), [InvoicePayment](https://docs.stripe.com/api/invoice-payment/object), [paginated InvoicePayments](https://docs.stripe.com/api/invoice-payment/list), and the official [Node resource](https://github.com/stripe/stripe-node/blob/master/src/resources/InvoicePayments.ts).
+
+Before live rollout, verify the real production owner/MFA adapter, actual central moderation/deletion routes, account app-membership projection, RedX dialect/permissions and revision-conflict behavior against the deployed server. Also verify webhook fulfillment/refunds in an isolated Stripe environment, reverse-proxy Host/CSRF behavior, device recovery identity checks and actual gateway lease termination on all three desktop platforms. `platform.readiness()` exposes missing central capabilities; do not replace missing authority with a permissive mock.

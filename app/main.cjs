@@ -7,6 +7,9 @@ if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!proces
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
 const {RedXAIAccount}=require('./redxai-auth.cjs');
+const {PlatformClient}=require('./platform-client.cjs');
+const platformConfig=require('./platform-config.cjs');
+let accountPlatform,workMeter,pluginRunner;
 const {validateRemoteConfig}=require('./tunnel-modes.cjs');
 let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,accountAuth,quitting=false;const activity=[];
 let lastNotifiedHandoffUrl=null;
@@ -55,6 +58,7 @@ if(process.argv.includes('--vortex-diagnostic')){
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,account:accountAuth.status(),gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
  async function startGateway(){
   if(!CI_SMOKE&&!accountAuth.isSignedIn())throw Error('Sign in to Red-XAI before starting MCP');
+  if(!CI_SMOKE&&platformConfig.required&&(!accountPlatform.state?.accepted))throw Error('Review and accept the Bridge agreements before connecting tools');
   if(gateway)return {running:true,url:gateway.url};
   gateway=await startServer({clients,oauth,port:tunnel?.config()?.mode==='named'?tunnel.config().localPort:0,isOperational:()=>CI_SMOKE||accountAuth.isSignedIn(),
    contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id)&&(CI_SMOKE||accountAuth.isSignedIn()),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});
@@ -62,6 +66,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   return {running:true,url:gateway.url};
  }
  async function shutDownGateway(){
+  if(workMeter)await workMeter.stop();
   tunnel.stop();approvals.cancelAll('Red-XAI sign-out');core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();
   const old=gateway;gateway=null;
   if(old){old.server.closeAllConnections?.();await old.stop().catch(()=>{});}
@@ -75,7 +80,8 @@ if(process.argv.includes('--vortex-diagnostic')){
  }
  async function openAfterLogin(){
   if(!accountAuth.isSignedIn())throw Error('Red-XAI account is not verified');
-  await startGateway();
+  if(platformConfig.required){try{await accountPlatform.status();}catch(e){emit('platform:state',{available:false,message:e.message});}}
+  if(!platformConfig.required||accountPlatform.state?.accepted)await startGateway();
   if(win.webContents.getURL()!==UI)await win.loadFile(path.join(__dirname,'index.html'));
   if(remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
   return accountAuth.status();
@@ -106,7 +112,11 @@ if(process.argv.includes('--vortex-diagnostic')){
     },
     onChange:value=>emit('account:state',value)
    });
+   accountPlatform=new PlatformClient({credentials:async()=>{await accountAuth.ensure();return accountAuth.session;},loadSecret:async name=>readSecret(name),saveSecret:async(name,value)=>saveSecret(name,value),clearSecret:async name=>{try{fs.unlinkSync(secretFile(name));}catch(e){if(e.code!=='ENOENT')throw e;}},label:os.hostname()});
+   pluginRunner=new (require('./plugin-runner.cjs').PluginRunner)({platform:accountPlatform,perform:core.perform,loadSecret:async name=>readSecret(name),saveSecret:async(name,value)=>saveSecret(name,value)});
+   if(platformConfig.required&&!CI_SMOKE&&!AUTH_SMOKE){workMeter=new (require('./platform-meter.cjs').PlatformMeter)({client:accountPlatform,stopWork:()=>{core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();}});core.configurePlatformMeter(workMeter);}
    if(!CI_SMOKE)await accountAuth.restore();
+   if(platformConfig.required&&accountAuth.isSignedIn())await accountPlatform.status().catch(()=>{});
   tunnel=new Tunnel(s=>{
    if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;
    atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);
@@ -131,7 +141,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
   tray=new Tray(icon);if(process.platform==='darwin')tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
-  if(CI_SMOKE||accountAuth.isSignedIn())await startGateway();
+  if(CI_SMOKE||(accountAuth.isSignedIn()&&(!platformConfig.required||accountPlatform.state?.accepted)))await startGateway();
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
    await win.loadFile(path.join(__dirname,(CI_SMOKE||accountAuth.isSignedIn())?'index.html':'sign-in.html'));
@@ -227,7 +237,11 @@ if(process.argv.includes('--vortex-diagnostic')){
   ipc('account:manual:2fa',async(code,method)=>{const r=await accountAuth.manual2fa(code,method);if(r.signedIn)await openAfterLogin();return r;});
   ipc('account:logout',async()=>{await shutDownGateway();await accountAuth.logout();await win.loadFile(path.join(__dirname,'sign-in.html'));return {signedIn:false};});
   ipc('account:signup',()=>shell.openExternal('https://red-xai.com/signup'));
-  ipc('cli:download',()=>shell.openExternal('https://github.com/grimvirusoffical-source/red-xai-installers/releases'));
+  ipc('cli:download',async()=>{const chosen=await dialog.showOpenDialog(win,{title:'Download Red-XAI CLI',properties:['openDirectory','createDirectory']});if(chosen.canceled)return{cancelled:true};const result=await require('./cli-download.cjs').downloadCli({directory:chosen.filePaths[0],onProgress:value=>emit('cli:progress',value)});return{...result,message:'CLI '+result.version+' downloaded to '+result.path+'. Node.js 20 or newer is required to run it.'};});
+  ipc('platform:status',async()=>{const me=await accountPlatform.status();emit('platform:state',me);return me;});
+  ipc('platform:checkout',async data=>{let result;if(data.kind==='stripe-dashboard'){const status=await accountPlatform.call('/admin/stripe/status');result={url:status.dashboardUrl};}else if(data.kind==='portal')result=await accountPlatform.call('/billing/portal');else result=await accountPlatform.checkout(data);const u=new URL(result.url);if(u.protocol!=='https:'||!['checkout.stripe.com','billing.stripe.com','dashboard.stripe.com'].includes(u.hostname)||u.username||u.password)throw Error('Untrusted payment address');await shell.openExternal(u.href);return{opened:true};});
+  ipc('clients:tool-profile',async({profile,name})=>{if(!['terminal','crawler'].includes(profile))throw Error('Choose terminal or crawler');const gatewayInfo=await startGateway(),client=clients.createProfile(name||('My '+profile+' AI'),profile),s=core.settings();s.clientPolicies[client.id]=Object.fromEntries(Object.keys(s.permissions).map(key=>[key,key===(profile==='terminal'?'terminal':'crawl')?'ask':'deny']));s.clientExecution[client.id]='background';core.saveSettings(s);const url=new URL(tunnel.status().phase==='online'?tunnel.status().url:gatewayInfo.url);url.pathname='/'+profile+'/mcp';emit('clients',clients.list());return{...client,profile,url:url.href,warning:'Keep this credential private. New actions require your approval.'};});
+  ipc('platform:request',async(route,data={})=>{if(route==='/plugins/checkpoints')return pluginRunner.listCheckpoints();if(route==='/plugins/run')return pluginRunner.run(data,{interactive:true,clientId:'Desktop',transport:'desktop'});const result=await accountPlatform.call(route,data);if(['/legal/accept','/plugins/acquire','/purchase/credits'].includes(route)){await accountPlatform.status();if(platformConfig.required&&accountPlatform.state.accepted)await startGateway();}if(['/account/reset','/account/delete'].includes(route)){await shutDownGateway();await accountAuth.logout();if(route==='/account/reset')await accountPlatform.forgetDevice();await win.loadFile(path.join(__dirname,'sign-in.html'));}return result;});
   ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
