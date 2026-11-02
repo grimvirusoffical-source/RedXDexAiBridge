@@ -34,6 +34,20 @@ class InstallerThemeCapture {
  [DllImport("user32.dll")] static extern int GetSystemMetrics(int metric);
  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window,int attribute,out Rect rect,int size);
+ static int frameRetries;
+ static Bitmap CaptureValidArtwork(IntPtr art,Dictionary<string,int> canonical,string evidenceStem,out int frame){
+   // A newly shown cross-process HWND may answer PrintWindow before its first
+   // paint has settled. Retry only briefly; every accepted image must match
+   // a complete genuine sprite frame exactly, with unchanged progress checks.
+   for(int attempt=0;attempt<8;attempt++){
+     var image=Capture(art);string hash=Hash(image);
+     if(canonical.TryGetValue(hash,out frame))return image;
+     image.Save(evidenceStem+".unexpected.png",ImageFormat.Png);
+     File.AppendAllText(evidenceStem+".retries.jsonl",new JavaScriptSerializer().Serialize(new{attempt=attempt,sha256Rgb=hash,width=image.Width,height=image.Height,utc=DateTime.UtcNow.ToString("O")})+Environment.NewLine);
+     image.Dispose();frameRetries++;Thread.Sleep(50);
+   }
+   throw new Exception("Rendered ring is not a valid generated frame after eight bounded captures; unexpected PNG/hash preserved.");
+ }
  static object Bounds(Rect rect){return new{x=rect.Left,y=rect.Top,width=rect.Right-rect.Left,height=rect.Bottom-rect.Top};}
  static bool Contains(Rect outer,Rect inner){return inner.Left>=outer.Left&&inner.Top>=outer.Top&&inner.Right<=outer.Right&&inner.Bottom<=outer.Bottom;}
  static bool Unobscured(IntPtr window,Rect rect){
@@ -86,8 +100,8 @@ class InstallerThemeCapture {
      result=Capture(window);result.Save(stem+".parent.png",ImageFormat.Png);
      mode="printWindowParent";
      if(!fallback){
-       using(var child=Capture(art)){
-         int frame;if(!canonical.TryGetValue(Hash(child),out frame)||Math.Abs(frame-native)>15)throw new Exception("Composite source is not a matching actual artwork frame.");
+       int frame;using(var child=CaptureValidArtwork(art,canonical,stem+".child",out frame)){
+         if(Math.Abs(frame-native)>15)throw new Exception("Composite source is not a matching actual artwork frame.");
          actualFrame=frame;child.Save(stem+".child.png",ImageFormat.Png);
          using(var graphics=Graphics.FromImage(result))graphics.DrawImageUnscaled(child,canvas.Left-root.Left,canvas.Top-root.Top);
        }
@@ -152,7 +166,7 @@ class InstallerThemeCapture {
              if(helper==0||helper==(uint)process.Id)throw new Exception("Artwork must be owned by its separate drawing process.");
              helpers.Add((int)helper);
              // PrintWindow performs cross-process rendering; HBITMAP handles are process-private.
-             using(var image=Capture(art))if(!canonical.TryGetValue(Hash(image),out rendered))throw new Exception("Rendered ring is not a valid generated frame.");
+             using(var image=CaptureValidArtwork(art,canonical,Path.Combine(args[2],"direct-canvas"),out rendered)){}
            }
            var text=new StringBuilder(1024);ReadControlText(status,0x000D,new IntPtr(text.Capacity),text);
            positions.Add(native);bool changed=frames.Add(rendered);statuses.Add(text.ToString());samples++;
@@ -187,7 +201,7 @@ class InstallerThemeCapture {
      if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient evidence: exit="+process.ExitCode+", samples="+samples+", frames="+frames.Count+", positions="+positions.Count+", statuses="+statuses.Count+", PNGs="+snapshots+", extraction="+extractionStatus+".");
      if(requireArt&&helpers.Count!=1)throw new Exception("Expected exactly one isolated drawing helper.");
      if(terminate&&(!helperKilled||fallbackSamples<3))throw new Exception("Insufficient progress evidence after forced artwork termination.");
-     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+"}");
+     File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+",\"strictFrameCaptureRetries\":"+frameRetries+"}");
      Console.WriteLine("Native installer theme captures and real progress checks passed.");return 0;
    } catch(Exception error) {Console.Error.WriteLine(error.Message);File.WriteAllText(Path.Combine(args[2],"failure.txt"),error.ToString());return 1;}
    finally {
