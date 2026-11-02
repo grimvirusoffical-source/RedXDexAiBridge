@@ -152,18 +152,33 @@ jobs:
             verification/
           if-no-files-found: error
           retention-days: 14
+          overwrite: true
   publish:
     if: (github.event_name == 'workflow_dispatch' && inputs.tag != '') || startsWith(github.ref, 'refs/tags/v')
     needs: [build, mac-smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
       - name: Verify live Red-XAI Quick Login supports Bridge before publishing
         run: node scripts/check-production-auth.cjs
+      - name: Select the newest verified artifact IDs from this run and commit
+        id: release-artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/release-artifacts.json"
+          node scripts/select-release-artifacts.cjs "$RUNNER_TEMP/release-artifacts.json"
       - uses: actions/download-artifact@v4
         with:
+          artifact-ids: ${{ steps.release-artifacts.outputs.artifact_ids }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
           path: artifacts
       - name: Publish verified Windows and Linux installers
         env:
