@@ -10,6 +10,12 @@ using System.Text;
 using System.Windows.Forms;
 class InstallerThemeUI {
  const string Property="RedXInstallerThemeWindow";
+ static void Trace(string text){
+   // Isolated CI diagnostics only; production installs write no extra files.
+   if(Environment.GetEnvironmentVariable("GITHUB_ACTIONS")!="true"||Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT")!="github-hosted")return;
+   string file=Environment.GetEnvironmentVariable("REDX_INSTALLER_THEME_DIAGNOSTICS");if(String.IsNullOrEmpty(file))return;
+   try{File.AppendAllText(file,DateTime.UtcNow.ToString("O")+" "+text+Environment.NewLine);}catch{}
+ }
  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder text,int count);
@@ -41,14 +47,16 @@ class InstallerThemeUI {
    IntPtr page=IntPtr.Zero,progress=IntPtr.Zero,art=IntPtr.Zero,current=IntPtr.Zero;
    Bitmap sprite=null;Process parent=null;System.Windows.Forms.Timer timer=null;ApplicationContext context=null;Artwork window=null;bool failed=false;
    try{
-     if(args.Length!=3)return 1;
+     Trace("startup; argument count="+args.Length);
+     if(args.Length!=2)throw new InvalidOperationException("Expected page and native bar.");
      page=new IntPtr(long.Parse(args[0],CultureInfo.InvariantCulture));progress=new IntPtr(long.Parse(args[1],CultureInfo.InvariantCulture));
      uint owner,progressOwner;GetWindowThreadProcessId(page,out owner);GetWindowThreadProcessId(progress,out progressOwner);
      var className=new StringBuilder(256);GetClassName(progress,className,className.Capacity);
-     if(owner==0||owner!=progressOwner||!IsWindow(page)||!IsWindow(progress)||!String.Equals(className.ToString(),"msctls_progress32",StringComparison.OrdinalIgnoreCase))return 1;
+     if(owner==0||owner!=progressOwner||!IsWindow(page)||!IsWindow(progress)||!String.Equals(className.ToString(),"msctls_progress32",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Invalid parent/progress window; class="+className+", same owner="+(owner==progressOwner));
      parent=Process.GetProcessById((int)owner);
-     string bitmapPath=Path.GetFullPath(args[2]);
-     if(!String.Equals(Path.GetDirectoryName(bitmapPath).TrimEnd('\\'),AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Artwork must be bundled beside its helper.");
+     // Resolve a fixed sibling directly. Comparing argument paths would reject
+     // equivalent 8.3 and long Windows TEMP paths used by NSIS and the CLR.
+     string bitmapPath=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"progress.bmp");
      sprite=new Bitmap(bitmapPath);if(sprite.Width!=200||sprite.Height!=232*101)throw new InvalidOperationException("Invalid progress sprite dimensions.");
      // Match the existing installer window, including its DPI virtualization.
      try{SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(page));}catch(EntryPointNotFoundException){}
@@ -57,6 +65,7 @@ class InstallerThemeUI {
      if(art==IntPtr.Zero)throw new InvalidOperationException("Could not create artwork window.");
      window=new Artwork(art,context);if(!SetProp(page,Property,art))throw new InvalidOperationException("Could not register artwork lifetime.");
      if(!SetWindowPos(art,IntPtr.Zero,0,0,0,0,0x13))throw new InvalidOperationException("Could not position artwork above native fallback.");
+     Trace("artwork child created");
      int last=-1;var lifetime=Stopwatch.StartNew();
      Action update=delegate{
        uint pageOwner,barOwner;GetWindowThreadProcessId(page,out pageOwner);GetWindowThreadProcessId(progress,out barOwner);
@@ -67,10 +76,11 @@ class InstallerThemeUI {
        IntPtr next;using(var frame=sprite.Clone(new Rectangle(0,percent*232,200,232),PixelFormat.Format24bppRgb))next=frame.GetHbitmap();
        IntPtr old=SendMessage(art,0x0172,IntPtr.Zero,next);
        if(old!=IntPtr.Zero&&old!=current)DeleteObject(old);if(current!=IntPtr.Zero)DeleteObject(current);current=next;last=percent;
+       Trace("native frame="+percent);
      };
-     timer=new System.Windows.Forms.Timer();timer.Interval=120;timer.Tick+=delegate{try{update();}catch{failed=true;context.ExitThread();}};
+     timer=new System.Windows.Forms.Timer();timer.Interval=120;timer.Tick+=delegate{try{update();}catch(Exception error){Trace(error.GetType().Name+": "+error.Message);failed=true;context.ExitThread();}};
      update();timer.Start();Application.Run(context);return failed?1:0;
-   }catch{return 1;}
+   }catch(Exception error){Trace(error.GetType().Name+": "+error.Message);return 1;}
    finally{
      if(timer!=null)timer.Dispose();if(IsWindow(page)&&GetProp(page,Property)==art)RemoveProp(page,Property);
      if(IsWindow(art))DestroyWindow(art);if(current!=IntPtr.Zero)DeleteObject(current);

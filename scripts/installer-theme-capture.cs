@@ -47,7 +47,9 @@ class InstallerThemeCapture {
      var canonical=new Dictionary<string,int>();
      using(var sprite=new Bitmap(args[1])) for(int i=0;i<=100;i++)using(var frame=sprite.Clone(new Rectangle(0,i*232,200,232),PixelFormat.Format32bppArgb))canonical[Hash(frame)]=i;
      Directory.CreateDirectory(args[2]);
-     process=Process.Start(new ProcessStartInfo(args[0]) { UseShellExecute=false });
+     var start=new ProcessStartInfo(args[0]) { UseShellExecute=false };
+     start.EnvironmentVariables["REDX_INSTALLER_THEME_DIAGNOSTICS"]=Path.Combine(args[2],"drawing-helper.log");
+     process=Process.Start(start);
      var positions=new HashSet<int>(); var frames=new HashSet<int>(); var statuses=new HashSet<string>();var helpers=new HashSet<int>();
      int snapshots=0,samples=0,fallbackSamples=0; var lines=new List<string>(); var watch=Stopwatch.StartNew();
      while(!process.HasExited&&watch.ElapsedMilliseconds<20000) {
@@ -101,7 +103,7 @@ class InstallerThemeCapture {
      foreach(int helperId in helpers){try{using(var helper=Process.GetProcessById(helperId))if(!helper.WaitForExit(2000))throw new Exception("Drawing helper outlived its installer window.");}catch(ArgumentException){}}
      File.WriteAllLines(Path.Combine(args[2],"native-progress.csv"),lines);
      bool extractionStatus=false;foreach(var statusText in statuses)if(statusText.Contains("fixture-"))extractionStatus=true;
-     if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient native progress, status, or screenshot evidence.");
+     if(process.ExitCode!=0||samples<5||frames.Count<3||positions.Count<3||statuses.Count<2||snapshots<2||!extractionStatus)throw new Exception("Insufficient evidence: exit="+process.ExitCode+", samples="+samples+", frames="+frames.Count+", positions="+positions.Count+", statuses="+statuses.Count+", PNGs="+snapshots+", extraction="+extractionStatus+".");
      if(requireArt&&helpers.Count!=1)throw new Exception("Expected exactly one isolated drawing helper.");
      if(terminate&&(!helperKilled||fallbackSamples<3))throw new Exception("Insufficient progress evidence after forced artwork termination.");
      File.WriteAllText(Path.Combine(args[2],"theme-result.json"),"{\"passed\":true,\"fixtureOnly\":true,\"nativeFallback\":"+fallback.ToString().ToLowerInvariant()+",\"forcedDrawingTermination\":"+helperKilled.ToString().ToLowerInvariant()+",\"fallbackSamples\":"+fallbackSamples+",\"isolatedDrawingProcesses\":"+helpers.Count+",\"drawingProcessExited\":true,\"samples\":"+samples+",\"distinctNativePositions\":"+positions.Count+",\"distinctRenderedFrames\":"+frames.Count+",\"statusChanges\":"+statuses.Count+",\"screenshots\":"+snapshots+"}");

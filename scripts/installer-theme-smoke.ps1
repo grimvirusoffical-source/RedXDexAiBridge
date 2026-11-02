@@ -9,7 +9,7 @@ try {
   node (Join-Path $PSScriptRoot 'check-installer-helper.cjs')
   if ($LASTEXITCODE -ne 0) { throw 'Source-built installer artwork privilege verification failed.' }
   $steps = Join-Path $root 'fixture-steps.nsh'
-  $stepText = 1..20 | ForEach-Object { "File /oname=fixture-$_.svg `"$repo\build\installer-theme\x.svg`"`nSleep 150" }
+  $stepText = 1..20 | ForEach-Object { "File /oname=fixture-$_.svg `"$repo\build\installer-theme\x.svg`"`nSleep 500" }
   $stepText | Set-Content -LiteralPath $steps
   & $compiler[0].FullName '/V2' '/WX' "/DBUILD_RESOURCES_DIR=$repo\build" "/DREDX_THEME_EXE=$exe" "/DREDX_THEME_TARGET=$root\fixture files" "/DREDX_THEME_STEPS=$steps" (Join-Path $PSScriptRoot 'installer-theme-harness.nsi')
   if ($LASTEXITCODE -ne 0) { throw 'Installer theme fixture did not compile.' }

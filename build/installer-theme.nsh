@@ -67,7 +67,7 @@ Function RedXThemeShow
   GetDlgItem $0 $HWNDPARENT 2
   SetCtlColors $0 F5F0F2 34242C
   System::Call 'user32::SetWindowPos(p $0,p 0,i 526,i 360,i 88,i 28,i 4)'
-  Exec '"$PLUGINSDIR\redx-theme\redx-installer-theme.exe" $RedXPage $RedXProgress "$PLUGINSDIR\redx-theme\progress.bmp"'
+  Exec '"$PLUGINSDIR\redx-theme\redx-installer-theme.exe" $RedXPage $RedXProgress'
 FunctionEnd
 
 Function RedXThemeLeave
