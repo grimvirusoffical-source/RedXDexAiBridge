@@ -26,14 +26,17 @@ function normalizeEndpoint(value = ENDPOINT) {
 
 function parseModels(json) {
   if (!Array.isArray(json?.data)) throw Error('The endpoint did not return a Vortex-compatible model list');
-  return [...new Set(json.data.map(value => value?.id).filter(value => typeof value === 'string' && value.length <= 256))];
+  return [...new Set(json.data.map(value => value?.id).filter(value => typeof value === 'string' && value.length > 0 && value.length <= 256))];
 }
 
 function validateKey(value) {
-  if (typeof value !== 'string') throw Error('Enter a Vortex API key');
-  const key = value.trim().replace(/^Bearer\s+/i, '');
-  if (!/^redx_(?:ai|xai)_[A-Za-z0-9_-]{8,}$/.test(key) || key.length > 128) {
-    throw Error('Enter a Vortex key beginning redx_ai_ or redx_xai_. Model and admin privileges are checked by your Vortex server, not guessed by this app.');
+  if (typeof value !== 'string') throw Error('Enter a Vortex key or a key for your configured compatible inference server');
+  const key = value.trim().replace(/^Bearer[ \t]+/i, '');
+  // Credentials are opaque. The service decides their validity, model scopes,
+  // admin privileges and expiry; a client prefix guess cannot establish any of
+  // those facts. Reject whitespace/control characters before constructing headers.
+  if (key.length < 8 || key.length > 4096 || !/^[\x21-\x7e]+$/.test(key)) {
+    throw Error('Enter a Vortex key or compatible inference API key: 8–4096 printable characters without embedded whitespace');
   }
   return key;
 }
@@ -51,7 +54,6 @@ function networkError(error, endpoint) {
 async function responseJSON(response) {
   const length = Number(response.headers?.get?.('content-length') || 0);
   if (length > MAX_RESPONSE) throw Error('Vortex response exceeded the 4 MB limit');
-  // Support minimal test doubles as well as streaming Fetch responses.
   if (!response.body?.getReader) {
     if (typeof response.text === 'function') {
       const text = await response.text();
@@ -93,22 +95,31 @@ async function request(key, route, body, fetcher = globalThis.fetch, options = {
     });
   } catch (error) { throw networkError(error, endpoint); }
   const data = await responseJSON(response);
+  const object = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   if (!response.ok) {
-    const cf = response.headers?.get?.('server')?.toLowerCase().includes('cloudflare') || /cloudflare/i.test(String(data.type || ''));
+    const cloudflare = !!response.headers?.get?.('server')?.toLowerCase().includes('cloudflare');
+    const challenge = response.headers?.get?.('cf-mitigated') === 'challenge';
+    const html = /text\/html/i.test(response.headers?.get?.('content-type') || '');
     let message;
-    if (cf && response.status === 403) message = 'Cloudflare blocked access before Vortex could validate the key. Check the endpoint/server access policy';
-    else message = {
-      401: 'Vortex rejected this key: it may be invalid, disabled, revoked, expired, or belong to a different server',
-      403: 'This Vortex key is not authorized for the requested model or operation',
-      404: 'The requested model or API route is unavailable at this endpoint',
-      429: 'Vortex rate limit reached; wait before trying again',
-      502: 'Vortex is reachable, but its model/provider is unavailable',
-      503: 'Vortex is temporarily unavailable'
-    }[response.status] || 'Vortex request failed';
+    // A Cloudflare Server header also appears on genuine upstream API errors.
+    // Only report a proxy block when the response actually looks like one.
+    if (response.status === 403 && (challenge || (cloudflare && (html || object.nonJSON)))) {
+      message = 'The proxy returned an access challenge instead of a Vortex API result. Check the endpoint/server access policy';
+    } else {
+      message = {
+        401: 'Vortex rejected this key: it may be invalid, disabled, revoked, expired, or belong to a different server',
+        403: 'This Vortex key is not authorized for the requested model or operation',
+        404: 'The requested model or API route is unavailable at this endpoint',
+        429: 'Vortex rate limit reached; wait before trying again',
+        502: 'Vortex is reachable, but its model/provider is unavailable',
+        503: 'Vortex is temporarily unavailable'
+      }[response.status] || 'Vortex request failed';
+    }
     const retry = response.status === 429 ? response.headers?.get?.('retry-after') : null;
     throw Error(`${message} (HTTP ${response.status})${retry && /^\d{1,6}$/.test(retry) ? `; retry after ${retry}s` : ''}`);
   }
-  if (data.nonJSON) throw Error('This address returned a web page instead of the Vortex API. Check the API base address.');
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw Error('The inference endpoint returned an invalid response object');
+  if (object.nonJSON) throw Error('This address returned a web page instead of the Vortex API. Check the API base address.');
   return data;
 }
 
@@ -119,12 +130,14 @@ async function models(key, fetcher = globalThis.fetch, options = {}) {
 async function chat(key, messages, model = DEFAULT_MODEL, fetcher = globalThis.fetch, options = {}) {
   if (!Array.isArray(messages) || messages.length < 1 || messages.length > 60) throw Error('Chat history must contain 1–60 messages');
   if (typeof model !== 'string' || !model.trim() || model.length > 256) throw Error('Select an available Vortex model');
-  const clean = messages.map(message => ({role: message?.role, content: typeof message?.content === 'string' ? message.content : ''}));
+  if (messages.some(message => !message || typeof message.content !== 'string')) throw Error('Invalid chat message content');
+  const clean = messages.map(message => ({role: message.role, content: message.content}));
   if (clean.some(message => !['user', 'assistant', 'system'].includes(message.role) || message.content.length > 30000)) throw Error('Invalid or oversized chat message');
   if (Buffer.byteLength(JSON.stringify(clean)) > 2 * 1024 * 1024) throw Error('Chat history is too large');
+  if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1)) throw Error('Token limit must be a positive integer');
   const result = await request(key, '/chat/completions', {
-    model, messages: clean, stream: false,
-    ...(options.maxTokens ? {max_tokens: Math.min(4096, Math.max(1, options.maxTokens))} : {})
+    model: model.trim(), messages: clean, stream: false,
+    ...(options.maxTokens ? {max_tokens: Math.min(4096, options.maxTokens)} : {})
   }, fetcher, options);
   const answer = result.choices?.[0]?.message?.content;
   if (typeof answer !== 'string') throw Error('Vortex returned no text reply');
