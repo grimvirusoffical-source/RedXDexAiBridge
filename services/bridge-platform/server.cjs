@@ -17,7 +17,7 @@ async function createProductionService(env=process.env){
  if(!/^bpc_[A-Za-z0-9]+$/.test(priceCatalog.portalConfiguration||''))throw Error('An explicit mode-specific Billing Portal configuration is required');
  const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookEndpointId:config.stripeWebhookEndpointId,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
  const media=new PluginMediaStore(config.mediaDirectory);
- const authenticate=createNativeAuthenticator({resolvePrivileges:authority.resolvePrivileges,trustedIP:authority.trustedIP});
+ const authenticate=createNativeAuthenticator({resolvePrivileges:authority.resolvePrivileges,trustedIP:authority.trustedIP,canonicalCookieTransport:config.canonicalCookieTransport===true});
  const readiness=createReadinessProbe({authority,store,platform,billing,legal,config,clientConfig:require('../../app/platform-config.cjs')});
  const handler=createHandler({platform,authenticate,readiness,verifyCSRF:authority.verifyCSRF,rawWebhook:billing.rawWebhook,extraRoutes:async input=>{
   if(input.route==='/admin/media'){const me=await platform.dispatch(input.actor,'/me');if(me.role!=='owner'||!me.accepted||!input.actor.mfaUsed||!Number.isFinite(input.actor.reauthAtMs)||input.actor.reauthAtMs>Date.now()||Date.now()-input.actor.reauthAtMs>600000)throw Error('Verified owner reauthentication required');const b=Buffer.from(String(input.body.base64||''),'base64');return{image:media.put(b,input.body.mimeType)};}

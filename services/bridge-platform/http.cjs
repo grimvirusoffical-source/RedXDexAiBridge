@@ -2,6 +2,17 @@
 const crypto=require('node:crypto');
 const {PlatformError}=require('./index.cjs');
 const DEVICELESS=new Set(['/catalog','/me','/device/challenge','/device/enroll','/account/join']);
+const CANONICAL_ME='https://red-xai.com/api/accounts/me',COOKIE_TOKEN=/^[A-Za-z0-9_~.+/-]{12,1024}={0,2}$/;
+const canonicalSubject=value=>typeof value==='string'&&value.length>0&&value.length<=200&&!/[\s\p{Cc}]/u.test(value)&&!(value in Object.prototype);
+function expectedCookieSubject(encoded){
+ if(typeof encoded!=='string'||!encoded.length||encoded.length>1100||!/^[A-Za-z0-9_-]+$/.test(encoded))return null;
+ const bytes=Buffer.from(encoded,'base64url'),value=bytes.toString('utf8');if(bytes.length>800||bytes.toString('base64url')!==encoded||!Buffer.from(value,'utf8').equals(bytes)||!canonicalSubject(value))return null;return value;
+}
+async function canonicalJSON(response){
+ if(!/^application\/json(?:\s*;\s*charset\s*=\s*utf-8)?\s*$/i.test(response.headers?.get('content-type')||'')||typeof response.body?.getReader!=='function')throw Error('Canonical account verification unavailable');
+ const reader=response.body.getReader(),chunks=[];let size=0;
+ try{while(true){const next=await reader.read();if(next.done)break;size+=next.value.byteLength;if(size>32768){await reader.cancel().catch(()=>{});throw Error('Canonical account verification unavailable');}chunks.push(Buffer.from(next.value));}const data=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));if(!data||typeof data!=='object'||Array.isArray(data))throw Error();return data;}catch{throw Error('Canonical account verification unavailable');}finally{reader.releaseLock();}
+}
 function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,rawWebhook=null,readiness=null,prefix='/redxai-bridge/api',publicOrigin='https://red-xai.com'}={}){
  if(!platform||typeof authenticate!=='function')throw Error('Trusted authentication adapter required');
  const budgets=new Map();
@@ -40,9 +51,38 @@ function createQuickLoginAuthenticator({request=fetch,trustedIP=()=>null,resolve
   return{sub:user.sub,username:user.username||'',email:user.email||'',verified:true,remoteIP:trustedIP(req),mfaUsed:privileges.mfaUsed===true,reauthenticationVerified:privileges.reauthenticationVerified===true,ownerVerified:privileges.ownerVerified===true,reauthAtMs:privileges.reauthAtMs||0,recoveryVerified:privileges.recoveryVerified===true,freshLoginVerified:privileges.freshLoginVerified===true,authorityContext:privileges.authorityContext};
  };
 }
-function createNativeAuthenticator({request=fetch,trustedIP=()=>null,resolvePrivileges=async()=>({})}={}){
+function createNativeAuthenticator({request=fetch,trustedIP=()=>null,resolvePrivileges=async()=>({}),canonicalCookieTransport=false,canonicalTimeoutMs=10000,canonicalMaxInFlight=8,now=Date.now}={}){
+ if(!Number.isSafeInteger(canonicalTimeoutMs)||canonicalTimeoutMs<10||canonicalTimeoutMs>10000||!Number.isSafeInteger(canonicalMaxInFlight)||canonicalMaxInFlight<1||canonicalMaxInFlight>8||typeof now!=='function')throw Error('Invalid canonical account verification limits');
  const quick=createQuickLoginAuthenticator({request,trustedIP,resolvePrivileges});
+ const canonicalPending=new Set();
+ async function canonical(req){
+  if(canonicalCookieTransport!==true||['authorization','x-redx-session','cookie','origin'].some(key=>Object.hasOwn(req.headers,key)))return null;
+  const credential=req.headers['x-bridge-site-session'],expected=expectedCookieSubject(req.headers['x-bridge-site-subject']);
+  if(typeof credential!=='string'||!COOKIE_TOKEN.test(credential)||!expected)return null;
+  if(canonicalPending.size>=canonicalMaxInFlight)throw Error('Canonical account verification unavailable');
+  const controller=new AbortController();let timer;
+  const pending=(async()=>{
+   const response=await request(CANONICAL_ME,{method:'GET',headers:{accept:'application/json',cookie:'redx_session='+credential},credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal});
+   if(controller.signal.aborted)throw Error();if(response.redirected||(response.url&&response.url!==CANONICAL_ME))return null;
+   if(!response.ok)return null;const data=await canonicalJSON(response);if(controller.signal.aborted)throw Error();const account=data.account,amr=data.amr,checkedAtMs=now();
+   if(!Number.isSafeInteger(checkedAtMs)||checkedAtMs<0||!account||typeof account!=='object'||Array.isArray(account)||!canonicalSubject(account.id)||account.id!==expected||!Array.isArray(amr)||!amr.length||amr.length>32||!amr.every(value=>typeof value==='string'&&/^[a-z][a-z0-9_-]{0,63}$/.test(value))||!Number.isSafeInteger(data.expiresMs)||data.expiresMs<=checkedAtMs)return null;
+   for(const value of [data,account])if((value.active!==undefined&&value.active!==true)||(value.status!==undefined&&value.status!=='active')||['deleted','disabled','banned'].some(key=>value[key]!==undefined&&value[key]!==false)||['email_verified','emailVerified'].some(key=>value[key]!==undefined&&value[key]!==true)||(value.pending!==undefined&&(!Array.isArray(value.pending)||value.pending.length)))return null;
+   // Upstream metadata is evidence for the trusted adapter, not a direct grant.
+   const privileges=await resolvePrivileges({sub:account.id,credential,provider:'website-cookie',request:req,upstream:data,signal:controller.signal});
+   if(controller.signal.aborted)throw Error();if(!privileges||typeof privileges!=='object'||Array.isArray(privileges))throw Error();
+   const completedAtMs=now();if(!Number.isSafeInteger(completedAtMs)||completedAtMs<0||data.expiresMs<=completedAtMs)return null;return{account,privileges};
+  })();
+  canonicalPending.add(pending);pending.then(()=>canonicalPending.delete(pending),()=>canonicalPending.delete(pending));
+  let verified;
+  try{verified=await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('Canonical account verification unavailable'));},canonicalTimeoutMs);})]);}
+  catch{throw Error('Canonical account verification unavailable');}finally{clearTimeout(timer);}
+  if(!verified)return null;const {account,privileges}=verified,sub=account.id;
+  // The expected subject is only a constraint on a proven primary identity.
+  // Roles/AMR/expiry do not themselves grant owner, email or freshness claims.
+  return{sub,username:typeof account.username==='string'?account.username.slice(0,80):'',email:typeof account.email==='string'?account.email.slice(0,254):'',verified:true,remoteIP:trustedIP(req),mfaUsed:privileges.mfaUsed===true,reauthenticationVerified:privileges.reauthenticationVerified===true,ownerVerified:privileges.ownerVerified===true,reauthAtMs:privileges.reauthAtMs||0,recoveryVerified:privileges.recoveryVerified===true,freshLoginVerified:privileges.freshLoginVerified===true,authorityContext:privileges.authorityContext};
+ }
  return async req=>{
+  if(Object.hasOwn(req.headers,'x-bridge-site-session')||Object.hasOwn(req.headers,'x-bridge-site-subject'))return canonical(req);
   if(req.headers.authorization)return quick(req);
   const credential=req.headers['x-redx-session'];if(typeof credential!=='string'||credential.length<12||credential.length>512||/[\r\n]/.test(credential))return null;
   const r=await request('https://api.red-xai.com/v1/accounts/me',{headers:{'X-RedX-Session':credential,accept:'application/json'},redirect:'error',signal:AbortSignal.timeout(10000)});if(!r.ok)return null;

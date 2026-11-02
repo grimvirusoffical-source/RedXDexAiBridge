@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http');
-const {ACCOUNT,HOOK,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,renewalStateMatches,prepare,assertOwnedCustomer,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute}=require('./sandbox-e2e.cjs');
+const {ACCOUNT,HOOK,PINNED_API_VERSION,REQUIRED_EVENTS,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,directEndpointURL,webhookOrigin,webhookPath,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute}=require('./sandbox-e2e.cjs');
 const catalog=require('./sandbox-catalog.json'),code=value=>error=>error.code===value;
 function configuration(){const temp=fs.realpathSync(os.tmpdir());return{account:ACCOUNT,mode:'sandbox',scenario:'subscription',apiKeyFile:path.join(temp,'private-rak'),webhookSecretFile:path.join(temp,'private-hook'),runDirectory:path.join(temp,'isolated-bridge-run'),allowSandboxMutations:true};}
 function readonlyClient(){
@@ -8,6 +8,10 @@ function readonlyClient(){
  for(const [sku,item]of Object.entries(catalog.products))registry.set(item.price,{id:item.price,active:true,livemode:false,currency:'usd',unit_amount:item.amountCents??null,product:{id:item.product,active:true},...(sku==='axioms'?{custom_unit_amount:{minimum:501}}:sku==='workflow-checkpoints'?{}:{recurring:{interval:'month',interval_count:1}})});
  const client={bridgeLivemode:false,accounts:{retrieve:async()=>({id:ACCOUNT})},prices:{retrieve:async id=>{reads.push(id);return registry.get(id);}},customers:{create:()=>{writes.push('customer');throw Error('Unexpected provider mutation');}},checkout:{sessions:{create:()=>{writes.push('checkout');throw Error('Unexpected provider mutation');}}}};
  return{client,writes,reads,registry};
+}
+function directFixture(){
+ const c={...configuration(),runId:'d'.repeat(32),webhookEndpointId:'we_fixture'},fixture=readonlyClient(),endpoint={id:c.webhookEndpointId,status:'enabled',livemode:false,api_version:PINNED_API_VERSION,url:directEndpointURL(c.runId),enabled_events:[...REQUIRED_EVENTS],metadata:{redx_e2e:c.runId,redx_app:'bridge'}};
+ fixture.client.getApiField=name=>name==='version'?PINNED_API_VERSION:undefined;fixture.client.webhookEndpoints={retrieve:async id=>{fixture.reads.push(id);return endpoint;}};return{...fixture,c,endpoint};
 }
 test('sandbox command guards reject live accounts, inline secrets, missing private paths and mutation opt-in',()=>{
  for(const change of [{account:'acct_live_other'},{mode:'live'},{scenario:'unknown'},{apiKey:'rk_test_must_not_be_inline'},{webhookSecret:'whsec_must_not_be_inline'},{apiKeyFile:'relative.key'},{allowSandboxMutations:false},{port:0},{waitSeconds:3601}])assert.throws(()=>configShape({...configuration(),...change}));
@@ -23,6 +27,64 @@ test('preflight validates the actual credential account and provider mode before
  const live=readonlyClient();live.client.bridgeLivemode=true;await assert.rejects(preflight(live.client),code('sandbox_client_required'));assert.equal(live.writes.length,0);
  const bad=readonlyClient();bad.registry.get(catalog.products.gold.price).livemode=true;await assert.rejects(preflight(bad.client));assert.equal(bad.writes.length,0);
  const valid=readonlyClient(),result=await execute('preflight',configuration(),{client:valid.client,secret:'whsec_fixture'});assert.deepEqual(result,{account:ACCOUNT,livemode:false,catalogVerified:true,fixtureIdentity:true,productionReady:false});assert.equal(valid.reads.length,8);assert.equal(valid.writes.length,0);
+});
+test('direct destination requires an explicit canonical run ID while CLI configuration remains supported',()=>{
+ const {c}=directFixture();assert.equal(configShape(c).runId,c.runId);assert.equal(configShape(configuration()).webhookEndpointId,undefined);
+ assert.throws(()=>configShape({...configuration(),webhookEndpointId:'we_fixture'}),code('direct_endpoint_run_id_required'));
+ for(const runId of [null,[],['d'.repeat(32)],'d'.repeat(31),'D'.repeat(32),'../'+'d'.repeat(32)])assert.throws(()=>configShape({...c,runId}),code('sandbox_run_id_invalid'));
+ for(const webhookEndpointId of [null,['we_fixture'],'we_','evt_fixture'])assert.throws(()=>configShape({...c,webhookEndpointId}),code('webhook_endpoint_invalid'));
+});
+test('direct preflight verifies the exact registered Sandbox destination without claiming secret or delivery proof',async()=>{
+ const f=directFixture(),result=await execute('preflight',f.c,{client:f.client,secret:'whsec_fixture'});
+ assert.deepEqual(result,{account:ACCOUNT,livemode:false,catalogVerified:true,endpointConfigurationVerified:true,webhookEndpointId:'we_fixture',fixtureIdentity:true,productionReady:false});assert.equal(f.reads.at(-1),'we_fixture');assert.equal(f.writes.length,0);assert.equal(result.signedWebhookVerified,undefined);assert.equal(result.signingSecretFingerprint,undefined);
+ // Event order is immaterial; membership must still be exact, without duplicates.
+ f.endpoint.enabled_events.reverse();await assert.doesNotReject(preflight(f.client,f.c));
+});
+test('temporary origins are default-off, require a boolean opt-in and accept only one strict trycloudflare label',()=>{
+ const {c}=directFixture(),origin='https://locally-owned-fixture.trycloudflare.com';
+ assert.equal(webhookOrigin(c),'https://red-xai.com');assert.equal(webhookOrigin({...c,allowTemporaryTunnel:false}),'https://red-xai.com');
+ for(const allowTemporaryTunnel of ['true',1,null,{},[]])assert.throws(()=>configShape({...c,allowTemporaryTunnel,testWebhookOrigin:origin}),code('temporary_tunnel_opt_in_invalid'));
+ for(const allowTemporaryTunnel of [undefined,false])assert.throws(()=>configShape({...c,allowTemporaryTunnel,testWebhookOrigin:origin}),code('temporary_tunnel_not_enabled'));
+ assert.throws(()=>configShape({...c,allowTemporaryTunnel:true}),code('temporary_tunnel_origin_required'));
+ assert.throws(()=>configShape({...configuration(),allowTemporaryTunnel:true,testWebhookOrigin:origin}),code('temporary_tunnel_direct_endpoint_required'));
+ for(const testWebhookOrigin of [null,[],['https://fixture.trycloudflare.com'],'https://red-xai.com','http://fixture.trycloudflare.com','https://fixture.trycloudflare.com:443','https://user:password@fixture.trycloudflare.com','https://fixture.trycloudflare.com/','https://fixture.trycloudflare.com/path','https://fixture.trycloudflare.com?','https://fixture.trycloudflare.com#','https://a.b.trycloudflare.com','https://trycloudflare.com','https://fixture.trycloudflare.com.evil.example','https://-fixture.trycloudflare.com','https://fixture-.trycloudflare.com','https://'+'a'.repeat(64)+'.trycloudflare.com','https://测试.trycloudflare.com','HTTPS://fixture.trycloudflare.com','https://Fixture.trycloudflare.com'])assert.throws(()=>configShape({...c,allowTemporaryTunnel:true,testWebhookOrigin}),code('temporary_tunnel_origin_invalid'));
+ const temporary={...c,allowTemporaryTunnel:true,testWebhookOrigin:origin};assert.equal(webhookOrigin(configShape(temporary)),origin);assert.equal(directEndpointURL(c.runId,temporary),origin+webhookPath(c));assert.equal(webhookPath(temporary),webhookPath(c));
+});
+test('temporary origin preflight binds the actual registered endpoint while retaining Sandbox and production-readiness limits',async()=>{
+ const f=directFixture();Object.assign(f.c,{allowTemporaryTunnel:true,testWebhookOrigin:'https://locally-owned-fixture.trycloudflare.com'});
+ await assert.rejects(preflight(f.client,f.c),code('sandbox_endpoint_configuration_mismatch'));f.endpoint.url=directEndpointURL(f.c.runId,f.c);
+ const result=await execute('preflight',f.c,{client:f.client,secret:'whsec_fixture'});assert.equal(result.endpointConfigurationVerified,true);assert.equal(result.livemode,false);assert.equal(result.fixtureIdentity,true);assert.equal(result.productionReady,false);assert.equal(f.writes.length,0);
+ f.endpoint.url=f.endpoint.url.replace('locally-owned-fixture','another-fixture');await assert.rejects(preflight(f.client,f.c),code('sandbox_endpoint_configuration_mismatch'));assert.equal(f.writes.length,0);
+});
+test('direct preflight refuses changed URLs, ownership, mode, status, API versions and event sets',async()=>{
+ const base=directFixture(),url=base.endpoint.url;
+ const changes=[{id:'we_other'},{status:'disabled'},{livemode:true},{api_version:'2026-09-30.endive'},{metadata:{redx_e2e:'e'.repeat(32),redx_app:'bridge'}},{metadata:{redx_e2e:base.c.runId,redx_app:'other'}},{enabled_events:['*']},{enabled_events:REQUIRED_EVENTS.slice(0,-1)},{enabled_events:[...REQUIRED_EVENTS,'customer.created']},{enabled_events:[...REQUIRED_EVENTS.slice(0,-1),REQUIRED_EVENTS[0]]},...['http://red-xai.com'+new URL(url).pathname,url+'?query=1',url+'#fragment',url.replace('red-xai.com','red-xai.com:443'),url.replace('red-xai.com','user:password@red-xai.com'),url.replace('red-xai.com','other.example'),url.replace(base.c.runId,'e'.repeat(32)),url+'/'].map(url=>({url}))];
+ for(const change of changes){const f=directFixture();Object.assign(f.endpoint,change);await assert.rejects(preflight(f.client,f.c),code('sandbox_endpoint_configuration_mismatch'));assert.equal(f.writes.length,0);}
+ const wrongSDK=directFixture();wrongSDK.client.getApiField=()=> '2026-09-30.endive';await assert.rejects(preflight(wrongSDK.client,wrongSDK.c),code('sandbox_sdk_api_version_mismatch'));assert.ok(!wrongSDK.reads.includes('we_fixture'));assert.equal(wrongSDK.writes.length,0);
+ const missing=directFixture();delete missing.client.webhookEndpoints;await assert.rejects(preflight(missing.client,missing.c),code('sandbox_endpoint_lookup_required'));
+});
+test('a failed direct endpoint preflight stops before creating fixture files or provider objects',async()=>{
+ const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-direct-')),f=directFixture();f.c.runDirectory=path.join(directory,'untouched');f.endpoint.enabled_events=['*'];
+ try{await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),code('sandbox_endpoint_configuration_mismatch'));assert.equal(fs.existsSync(f.c.runDirectory),false);assert.equal(f.writes.length,0);}finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+test('direct manifests bind both the preassigned run ID and endpoint and cannot resume under another destination',async()=>{
+ const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-direct-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');f.c.runDirectory=directory;fs.chmodSync(directory,0o700);let attempts=0;
+ f.client.customers.create=async()=>{attempts++;throw stop;};
+ try{
+  await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),error=>error===stop);assert.equal(attempts,1);
+  const run=JSON.parse(fs.readFileSync(path.join(directory,'run-state.json'),'utf8'));assert.equal(run.id,f.c.runId);assert.equal(run.subject,'sandbox_e2e_'+f.c.runId);assert.equal(run.webhookEndpointId,f.c.webhookEndpointId);assert.equal(run.webhookOrigin,'https://red-xai.com');assert.doesNotThrow(()=>assertRun(run,f.c));
+  for(const c of [{...f.c,runId:'e'.repeat(32)},{...f.c,webhookEndpointId:'we_other'},{...f.c,webhookEndpointId:undefined}])assert.throws(()=>assertRun(run,c),code('sandbox_run_mismatch'));
+  const wrongRun={...run,id:'e'.repeat(32),subject:'sandbox_e2e_'+'e'.repeat(32)};fs.writeFileSync(path.join(directory,'run-state.json'),JSON.stringify(wrongRun),{mode:0o600});await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),code('sandbox_run_mismatch'));assert.equal(attempts,1);
+ }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+test('a new temporary run saves its exact origin and status cannot resume it on a changed or default origin',async()=>{
+ const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-tunnel-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');fs.chmodSync(directory,0o700);Object.assign(f.c,{runDirectory:directory,allowTemporaryTunnel:true,testWebhookOrigin:'https://locally-owned-fixture.trycloudflare.com'});f.endpoint.url=directEndpointURL(f.c.runId,f.c);f.client.customers.create=async()=>{throw stop;};
+ try{
+  await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),error=>error===stop);const run=JSON.parse(fs.readFileSync(path.join(directory,'run-state.json'),'utf8'));assert.equal(run.webhookOrigin,f.c.testWebhookOrigin);assert.equal((await execute('status',f.c)).productionReady,false);
+  await assert.rejects(execute('status',{...f.c,testWebhookOrigin:'https://another-fixture.trycloudflare.com'}),code('sandbox_run_mismatch'));
+  await assert.rejects(execute('status',{...f.c,allowTemporaryTunnel:false,testWebhookOrigin:undefined}),code('sandbox_run_mismatch'));
+  assert.throws(()=>assertRun({...run,webhookOrigin:undefined},f.c),code('sandbox_run_mismatch'));
+ }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
 test('cleanup ownership rejects unrelated, live, deleted or mismatched fixture customers',()=>{
  const run={id:'a'.repeat(32),customerId:'cus_fixture',subject:'sandbox_e2e_'+'a'.repeat(32)},owned={id:run.customerId,livemode:false,metadata:{redx_e2e:run.id,redx_subject:run.subject}};
@@ -46,7 +108,16 @@ function call(port,{method='POST',host='127.0.0.1:'+port,url=HOOK,body=Buffer.fr
 test('loopback listener exposes only the exact webhook route and preserves raw bytes and signature',async()=>{
  const received=[],server=webhookServer({rawWebhook:async(req,res)=>{const bytes=[];for await(const chunk of req)bytes.push(chunk);received.push({raw:Buffer.concat(bytes),signature:req.headers['stripe-signature']});res.writeHead(200);res.end('{}');}},0);
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;
- try{for(const options of [{method:'GET'},{host:'untrusted.example'},{url:'/status'},{url:HOOK+'?other=1'}])assert.equal(await call(port,options),404);assert.equal(received.length,0);assert.equal(await call(port),200);assert.deepEqual(received,[{raw:Buffer.from([0xff,0,0x61]),signature:'signature-fixture'}]);}finally{await new Promise(resolve=>server.close(resolve));}
+ try{for(const options of [{method:'GET'},{host:'untrusted.example'},{url:'/status'},{url:HOOK+'?other=1'},{url:webhookPath(directFixture().c)}])assert.equal(await call(port,options),404);assert.equal(received.length,0);assert.equal(await call(port),200);assert.deepEqual(received,[{raw:Buffer.from([0xff,0,0x61]),signature:'signature-fixture'}]);}finally{await new Promise(resolve=>server.close(resolve));}
+});
+test('direct listener accepts only its configured preserved path and leaves raw signed bytes unchanged',async()=>{
+ const {c}=directFixture(),hook=webhookPath(c),received=[],server=webhookServer({rawWebhook:async(req,res)=>{const chunks=[];for await(const chunk of req)chunks.push(chunk);received.push({url:req.url,raw:Buffer.concat(chunks),signature:req.headers['stripe-signature']});res.writeHead(200);res.end('{}');}},0,c);
+ assert.equal(hook,new URL(directEndpointURL(c.runId)).pathname);assert.equal(webhookPath(configuration()),HOOK);assert.throws(()=>webhookServer({},0,{webhookEndpointId:c.webhookEndpointId,runId:'../other'}),code('sandbox_run_id_invalid'));
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;
+ try{
+  for(const options of [{url:HOOK},{url:hook,method:'GET'},{url:hook,host:'red-xai.com'},{url:hook.replace(c.runId,'e'.repeat(32))},{url:hook+'?other=1'},{url:hook+'/'},{url:'/status'},{url:'https://red-xai.com'+hook}])assert.equal(await call(port,options),404);
+  assert.equal(received.length,0);assert.equal(await call(port,{url:hook}),200);assert.deepEqual(received,[{url:hook,raw:Buffer.from([0xff,0,0x61]),signature:'signature-fixture'}]);
+ }finally{await new Promise(resolve=>server.close(resolve));}
 });
 test('status and errors never expose private fields or arbitrary provider strings',()=>{
  const run={stage:'complete',scenario:'subscription',apiKey:'rk_test_private',webhookSecret:'whsec_private',customerEmail:'private@example.invalid',evidence:{grantVerified:true,signedWebhookVerified:true,renewalVerified:true,apiKey:'rk_test_private',signingSecretFingerprint:'a'.repeat(64)}};

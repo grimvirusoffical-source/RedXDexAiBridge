@@ -5,6 +5,9 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {FileStore}=require('./store.cjs'),{createPlatform}=require('./index.cjs'),{createStripeBilling}=require('./stripe.cjs');
 const catalog=require('./sandbox-catalog.json');
 const ACCOUNT='acct_1USFfGEKYCPRlM5G',HOOK='/redxai-bridge/api/stripe/webhook';
+const COMPANY_ORIGIN='https://red-xai.com';
+const PINNED_API_VERSION='2026-10-28.endive';
+const REQUIRED_EVENTS=Object.freeze(['checkout.session.completed','checkout.session.async_payment_succeeded','checkout.session.async_payment_failed','customer.subscription.updated','customer.subscription.deleted','invoice.paid','invoice.payment_failed','charge.refunded','charge.dispute.created','charge.dispute.updated','charge.dispute.closed','radar.early_fraud_warning.created']);
 const SAFE_ERROR=Symbol('sandbox-safe-error');
 const fail=code=>{const e=new Error(code);e.code=code;e[SAFE_ERROR]=true;throw e;};
 const safeError=error=>error?.[SAFE_ERROR]===true?error.code:'sandbox_operation_failed';
@@ -16,7 +19,10 @@ function configShape(c){
  if(c.allowSandboxMutations!==true)fail('sandbox_mutations_not_enabled');
  const port=c.port??17784,waitSeconds=c.waitSeconds??1800;
  if(!Number.isSafeInteger(port)||port<1024||port>65535||!Number.isSafeInteger(waitSeconds)||waitSeconds<5||waitSeconds>3600)fail('sandbox_limits_invalid');
- if(c.webhookEndpointId!==undefined&&!/^we_[A-Za-z0-9]+$/.test(c.webhookEndpointId))fail('webhook_endpoint_invalid');
+ if(c.webhookEndpointId!==undefined&&(typeof c.webhookEndpointId!=='string'||!/^we_[A-Za-z0-9]+$/.test(c.webhookEndpointId)))fail('webhook_endpoint_invalid');
+ if(c.runId!==undefined&&(typeof c.runId!=='string'||!/^[a-f0-9]{32}$/.test(c.runId)))fail('sandbox_run_id_invalid');
+ if(c.webhookEndpointId!==undefined&&c.runId===undefined)fail('direct_endpoint_run_id_required');
+ webhookOrigin(c);
  return{...c,port,waitSeconds};
 }
 function privateRead(file){const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||st.size>1024*1024||(process.platform!=='win32'&&(st.mode&0o077)))fail('private_file_required');return fs.readFileSync(file,'utf8');}
@@ -36,15 +42,37 @@ function atomicJSON(file,value){const temp=file+'.'+crypto.randomUUID()+'.tmp',f
 function privateDirectory(directory){privateLocation(directory);fs.mkdirSync(directory,{recursive:true,mode:0o700});const st=fs.lstatSync(directory);if(!st.isDirectory()||st.isSymbolicLink()||(process.platform!=='win32'&&(st.mode&0o077)))fail('private_directory_required');privateLocation(directory);}
 function lockRun(directory){const file=path.join(directory,'run.lock');let fd;try{fd=fs.openSync(file,'wx',0o600);}catch(e){if(e.code==='EEXIST')fail('sandbox_run_already_locked');throw e;}fs.writeFileSync(fd,JSON.stringify({pid:process.pid,startedUtc:new Date().toISOString()}));return()=>{fs.closeSync(fd);fs.unlinkSync(file);};}
 function assertOwnedCustomer(customer,run){if(customer?.deleted||customer?.livemode!==false||customer.id!==run.customerId||customer.metadata?.redx_e2e!==run.id||customer.metadata?.redx_subject!==run.subject)fail('sandbox_customer_ownership_mismatch');}
-function assertRun(run,c){if(run?.schema!==1||run.account!==ACCOUNT||run.scenario!==c.scenario||!/^[a-f0-9]{32}$/.test(run.id)||run.subject!=='sandbox_e2e_'+run.id||run.sessionId!==undefined&&!/^cs_test_[A-Za-z0-9]+$/.test(run.sessionId))fail('sandbox_run_mismatch');}
+function assertRun(run,c){if(run?.schema!==1||run.account!==ACCOUNT||run.scenario!==c.scenario||!/^[a-f0-9]{32}$/.test(run.id)||c.runId!==undefined&&run.id!==c.runId||run.webhookEndpointId!==c.webhookEndpointId||c.webhookEndpointId!==undefined&&run.webhookOrigin!==webhookOrigin(c)||run.subject!=='sandbox_e2e_'+run.id||run.sessionId!==undefined&&!/^cs_test_[A-Za-z0-9]+$/.test(run.sessionId))fail('sandbox_run_mismatch');}
 function checkoutURL(sessionId,value){let url;try{url=new URL(value);}catch{fail('sandbox_checkout_url_invalid');}if(!/^cs_test_[A-Za-z0-9]+$/.test(sessionId||'')||url.protocol!=='https:'||url.host!=='checkout.stripe.com'||url.username||url.password||url.search||url.pathname!=='/c/pay/'+sessionId||url.href.includes('cs_live_'))fail('sandbox_checkout_url_invalid');return url.href;}
-async function preflight(client){
+function directEndpointPath(runId){if(typeof runId!=='string'||!/^[a-f0-9]{32}$/.test(runId))fail('sandbox_run_id_invalid');return'/redxai-bridge-sandbox-e2e/'+runId+'/stripe/webhook';}
+function webhookOrigin(c={}){
+ if(c.allowTemporaryTunnel!==undefined&&typeof c.allowTemporaryTunnel!=='boolean')fail('temporary_tunnel_opt_in_invalid');
+ if(c.testWebhookOrigin===undefined){if(c.allowTemporaryTunnel===true)fail('temporary_tunnel_origin_required');return COMPANY_ORIGIN;}
+ if(c.allowTemporaryTunnel!==true)fail('temporary_tunnel_not_enabled');
+ if(c.webhookEndpointId===undefined)fail('temporary_tunnel_direct_endpoint_required');
+ if(typeof c.testWebhookOrigin!=='string'||!/^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com$/.test(c.testWebhookOrigin))fail('temporary_tunnel_origin_invalid');
+ return c.testWebhookOrigin;
+}
+function directEndpointURL(runId,c={}){return webhookOrigin(c)+directEndpointPath(runId);}
+function webhookPath(c={}){if(c.webhookEndpointId===undefined)return HOOK;if(typeof c.webhookEndpointId!=='string'||!/^we_[A-Za-z0-9]+$/.test(c.webhookEndpointId))fail('webhook_endpoint_invalid');return directEndpointPath(c.runId);}
+async function directEndpointPreflight(client,c){
+ if(!/^we_[A-Za-z0-9]+$/.test(c.webhookEndpointId||''))fail('webhook_endpoint_invalid');
+ const url=directEndpointURL(c.runId,c);
+ if(require('stripe').API_VERSION!==PINNED_API_VERSION||typeof client.getApiField!=='function'||client.getApiField('version')!==PINNED_API_VERSION)fail('sandbox_sdk_api_version_mismatch');
+ if(typeof client.webhookEndpoints?.retrieve!=='function')fail('sandbox_endpoint_lookup_required');
+ const endpoint=await client.webhookEndpoints.retrieve(c.webhookEndpointId),events=endpoint?.enabled_events;
+ if(endpoint?.id!==c.webhookEndpointId||endpoint.status!=='enabled'||endpoint.livemode!==false||endpoint.api_version!==PINNED_API_VERSION||endpoint.url!==url||endpoint.metadata?.redx_e2e!==c.runId||endpoint.metadata?.redx_app!=='bridge'||!Array.isArray(events)||events.length!==REQUIRED_EVENTS.length||new Set(events).size!==REQUIRED_EVENTS.length||!REQUIRED_EVENTS.every(type=>events.includes(type)))fail('sandbox_endpoint_configuration_mismatch');
+ // Endpoint metadata/API reads cannot establish which signing secret was saved.
+ return{endpointConfigurationVerified:true,webhookEndpointId:endpoint.id};
+}
+async function preflight(client,c={}){
  if(client.bridgeLivemode!==false)fail('sandbox_client_required');
  const account=await client.accounts.retrieve();if(account.id!==ACCOUNT)fail('sandbox_account_mismatch');
  const verifier=require('./stripe-prices.cjs').createPriceVerifier({client,prices:catalog.products,livemode:false});
  const {TIERS}=require('./catalog.cjs');for(const tier of TIERS.filter(t=>t.monthlyCents))await verifier.prepare({kind:'subscription',sku:tier.id,amountCents:tier.monthlyCents});
  await verifier.prepare({kind:'plugin',sku:'workflow-checkpoints',amountCents:399});await verifier.prepare({kind:'credits',sku:'credits',amountCents:523});
- return{account:ACCOUNT,livemode:false,catalogVerified:true};
+ const endpoint=c.webhookEndpointId===undefined?{}:await directEndpointPreflight(client,c);
+ return{account:ACCOUNT,livemode:false,catalogVerified:true,...endpoint};
 }
 async function clientAndSecret(c,reader){
  reader??=require('./protected-secret.cjs');
@@ -67,8 +95,9 @@ async function openFixture(c,run){
  const me=await platform.dispatch(actor,'/me');if(!me.accepted){const grant=await platform.dispatch(actor,'/legal/read',{version:platform.legalVersion});await platform.dispatch(actor,'/legal/accept',{grant:grant.grant,read:true,agree:true});}
  return{store,platform,actor};
 }
-function webhookServer(billing,port){
- const server=http.createServer((req,res)=>{const actualPort=server.address()?.port??port,hosts=new Set(['127.0.0.1:'+actualPort,'localhost:'+actualPort]);if(!hosts.has(req.headers.host)||req.method!=='POST'||req.url!==HOOK){res.writeHead(404);res.end();return;}void billing.rawWebhook(req,res);});return server;
+function webhookServer(billing,port,c={}){
+ const hook=webhookPath(c);
+ const server=http.createServer((req,res)=>{const actualPort=server.address()?.port??port,hosts=new Set(['127.0.0.1:'+actualPort,'localhost:'+actualPort]);if(!hosts.has(req.headers.host)||req.method!=='POST'||req.url!==hook){res.writeHead(404);res.end();return;}void billing.rawWebhook(req,res);});return server;
 }
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function waitUntil(check,deadline){while(Date.now()<deadline){const result=await check();if(result)return result;await pause(1500);}return null;}
@@ -147,19 +176,19 @@ async function execute(command,c,{client,secret,output=value=>console.log(JSON.s
  const file=path.join(c.runDirectory,'run-state.json');
  if(command==='status'){const run=JSON.parse(privateRead(file));assertRun(run,c);return publicStatus(run);}
  if(!client){({client,secret}=await clientAndSecret(c));}
- const checked=await preflight(client);if(command==='preflight')return{...checked,fixtureIdentity:true,productionReady:false};
+ const checked=await preflight(client,c);if(command==='preflight')return{...checked,fixtureIdentity:true,productionReady:false};
  privateDirectory(c.runDirectory);const unlock=lockRun(c.runDirectory);let server;
  try{
-  let run;if(fs.existsSync(file))run=JSON.parse(privateRead(file));else{const id=crypto.randomBytes(16).toString('hex');run={schema:1,id,subject:'sandbox_e2e_'+id,account:ACCOUNT,scenario:c.scenario,stage:'created'};}
+  let run;if(fs.existsSync(file))run=JSON.parse(privateRead(file));else{const id=c.runId??crypto.randomBytes(16).toString('hex');run={schema:1,id,subject:'sandbox_e2e_'+id,account:ACCOUNT,scenario:c.scenario,stage:'created',...(c.webhookEndpointId?{webhookEndpointId:c.webhookEndpointId,webhookOrigin:webhookOrigin(c)}:{})};}
   assertRun(run,c);const save=()=>atomicJSON(file,run);save();
   if(command==='cleanup'){if(run.cleaned)return publicStatus(run);return cleanup(client,run,save);}
   if(run.cleaned)fail('sandbox_run_already_cleaned');if(run.stage==='complete')return publicStatus(run);
   const {platform,actor}=await openFixture(c,run);save();
   const billing=createStripeBilling({client,platform,webhookSecret:secret,webhookEndpointId:c.webhookEndpointId,livemode:false,prices:catalog.products,portalConfiguration:catalog.portalConfiguration});
-  server=webhookServer(billing,c.port);server.headersTimeout=10000;server.requestTimeout=30000;
+  server=webhookServer(billing,c.port,c);server.headersTimeout=10000;server.requestTimeout=30000;
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(c.port,'127.0.0.1',resolve);});
   await prepare(client,c,run,platform,actor,billing,save);
-  output({...publicStatus(run),listener:'http://127.0.0.1:'+c.port+HOOK,waitingFor:'Genuine signed Stripe delivery after a human completes Sandbox Checkout. Never bypass Checkout security challenges.'});
+  output({...publicStatus(run),listener:'http://127.0.0.1:'+c.port+webhookPath(c),waitingFor:'Genuine signed Stripe delivery after a human completes Sandbox Checkout. Never bypass Checkout security challenges.'});
   const deadline=Date.now()+c.waitSeconds*1000;
   if(!run.evidence?.grantVerified){const grant=await waitUntil(()=>verifyGrant(platform,actor,run),deadline);if(!grant)return publicStatus(run);run.evidence=grant;run.stage='grant_verified';save();}
   if(c.scenario==='subscription'&&!run.evidence?.renewalVerified){if(!await advanceRenewal(client,run,platform,actor,deadline,save))return publicStatus(run);}
@@ -168,4 +197,4 @@ async function execute(command,c,{client,secret,output=value=>console.log(JSON.s
  }finally{if(server)await new Promise(resolve=>server.close(resolve));unlock();}
 }
 if(require.main===module){Promise.resolve().then(()=>execute(process.argv[2],readConfig(process.argv[3]))).then(result=>{console.log(JSON.stringify(result));if(!['complete'].includes(result.stage)&&process.argv[2]==='run')process.exitCode=2;}).catch(error=>{console.error(JSON.stringify({error:safeError(error),livemode:false,productionReady:false}));process.exitCode=1;});}
-module.exports={ACCOUNT,HOOK,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute};
+module.exports={ACCOUNT,HOOK,PINNED_API_VERSION,REQUIRED_EVENTS,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,directEndpointURL,webhookOrigin,webhookPath,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute};

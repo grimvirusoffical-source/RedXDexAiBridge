@@ -29,7 +29,7 @@ if(SMOKE_DIAGNOSTICS){
  app.on('quit',(_event,code)=>smokeTrace('app-quit',{code}));
 }
 const AUTH_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_AUTH_SMOKE_OUTPUT;
-const PUBLIC_IPC=new Set(['account:status','account:quick:start','account:quick:open','account:quick:poll','account:quick:cancel','account:manual:login','account:manual:2fa','account:logout','account:signup','cli:download','app:version','updates:status','app:updates','updates:download','updates:install']);
+const PUBLIC_IPC=new Set(['account:status','account:quick:start','account:quick:open','account:quick:poll','account:quick:cancel','account:manual:login','account:manual:2fa','account:manual:call','account:manual:cancel','account:logout','account:signup','cli:download','app:version','updates:status','app:updates','updates:download','updates:install']);
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
 app.setName('RedXDexAiBridge');
 if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test')))app.setPath('userData',path.join(process.env.REDXDEX_SMOKE_OUTPUT,'userData'));
@@ -249,13 +249,14 @@ if(process.argv.includes('--vortex-diagnostic')){
    if(!CI_SMOKE){
     const interval=setInterval(async()=>{
      if(!accountAuth.session||!gateway)return;
+     const revalidationEpoch=accountAuth.authEpoch,revalidationSession=accountAuth.session;
      try{
       if(Date.now()-(accountAuth.lastRevalidation||0)>60000){
        await accountAuth.refresh();
        accountAuth.lastRevalidation=Date.now();
       }
       await accountAuth.ensure();
-     }catch{await showLogin().catch(()=>{});}
+     }catch{if(revalidationEpoch===accountAuth.authEpoch&&(!accountAuth.session||accountAuth.session===revalidationSession))await showLogin().catch(()=>{});}
     },30000);interval.unref?.();
    }
   if(core.settings().launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,true);}catch(error){audit({at:Date.now(),tool:'startup_configuration',clientName:'Desktop',error:true});emit('startup:warning',error.message);}}
@@ -269,6 +270,8 @@ if(process.argv.includes('--vortex-diagnostic')){
   ipc('account:quick:cancel',()=>accountAuth.cancelQuick());
   ipc('account:manual:login',async(login,password)=>{const r=await accountAuth.manualLogin(login,password);if(r.signedIn)await openAfterLogin();return r;});
   ipc('account:manual:2fa',async(code,method)=>{const r=await accountAuth.manual2fa(code,method);if(r.signedIn)await openAfterLogin();return r;});
+  ipc('account:manual:call',()=>accountAuth.manualCall());
+  ipc('account:manual:cancel',()=>accountAuth.cancelManual());
   ipc('account:logout',async()=>{await shutDownGateway();await accountAuth.logout();await win.loadFile(path.join(__dirname,'sign-in.html'));return {signedIn:false};});
   ipc('account:signup',()=>shell.openExternal('https://red-xai.com/signup'));
   ipc('cli:download',async()=>{const chosen=await dialog.showOpenDialog(win,{title:'Download Red-XAI CLI',properties:['openDirectory','createDirectory']});if(chosen.canceled)return{cancelled:true};const result=await require('./cli-download.cjs').downloadCli({directory:chosen.filePaths[0],onProgress:value=>emit('cli:progress',value)});return{...result,message:'CLI '+result.version+' downloaded to '+result.path+'. Node.js 20 or newer is required to run it.'};});
