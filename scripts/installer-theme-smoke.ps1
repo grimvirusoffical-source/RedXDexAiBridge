@@ -19,7 +19,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Uninstaller wrapper theme compile regression failed.' }
   $capture = Join-Path $root 'theme-capture.exe'
   $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-  & $csc /nologo /optimize+ /target:exe /reference:System.Drawing.dll "/out:$capture" (Join-Path $PSScriptRoot 'installer-theme-capture.cs')
+  & $csc /nologo /optimize+ /target:exe /reference:System.Drawing.dll /reference:System.Web.Extensions.dll "/out:$capture" (Join-Path $PSScriptRoot 'installer-theme-capture.cs')
   if ($LASTEXITCODE -ne 0) { throw 'Installer theme capture helper did not compile.' }
   & $capture $exe (Join-Path $repo 'build/installer-theme/progress-sprite.bmp') (Join-Path $repo 'verification/installer-theme')
   if ($LASTEXITCODE -ne 0) { throw 'Installer theme runtime inspection failed.' }
