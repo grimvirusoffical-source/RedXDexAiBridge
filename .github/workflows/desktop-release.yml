@@ -63,6 +63,29 @@ jobs:
           xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron . --no-sandbox
           unset REDXDEX_SMOKE_OUTPUT
           xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron scripts/desktop-smoke.cjs --no-sandbox
+      - name: Windows Red-XAI signed-out GUI and MCP smoke
+        timeout-minutes: 5
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:REDXDEX_DATA_DIR = Join-Path $env:RUNNER_TEMP 'bridge-locked-data'
+          $env:REDXDEX_AUTH_SMOKE_OUTPUT = Join-Path $env:RUNNER_TEMP 'bridge-auth-smoke'
+          & .\node_modules\.bin\electron.cmd .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $r = Get-Content (Join-Path $env:REDXDEX_AUTH_SMOKE_OUTPUT 'result.json') -Raw | ConvertFrom-Json
+          if (-not ($r.gatewayLocked -and $r.accountLocked -and $r.privilegedIPCRejected -and $r.quickButton -and $r.manualForm)) { exit 1 }
+          Remove-Item Env:REDXDEX_AUTH_SMOKE_OUTPUT
+          Remove-Item Env:REDXDEX_DATA_DIR
+      - name: Linux Red-XAI signed-out GUI and MCP smoke
+        timeout-minutes: 5
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-locked-data"
+          export REDXDEX_AUTH_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-auth-smoke"
+          xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron . --no-sandbox
+          node -e 'const r=require(process.env.REDXDEX_AUTH_SMOKE_OUTPUT+"/result.json");if(!r.gatewayLocked||!r.accountLocked||!r.privilegedIPCRejected||!r.quickButton||!r.manualForm)process.exit(1);'
+          unset REDXDEX_DATA_DIR REDXDEX_AUTH_SMOKE_OUTPUT
       - name: Build Windows installer
         if: runner.os == 'Windows'
         run: npm run package:win
@@ -147,3 +170,14 @@ jobs:
           ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
           node -e 'const fs=require("fs"),p=process.env.REDXDEX_SMOKE_OUTPUT+"/result.json",r=JSON.parse(fs.readFileSync(p,"utf8"));if(!r.backgroundWhileHidden||r.crawlerTools!==5||r.rendererErrors?.length)process.exit(1);console.log("macOS background smoke passed",r.navigation.length,"pages");'
 
+
+      - name: macOS Red-XAI signed-out GUI and MCP smoke
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset REDXDEX_SMOKE_OUTPUT
+          export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-auth-data"
+          export REDXDEX_AUTH_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-auth-smoke"
+          ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-auth-smoke.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-auth-smoke.log"; exit 1; }
+          node -e 'const r=require(process.env.REDXDEX_AUTH_SMOKE_OUTPUT+"/result.json");if(!r.gatewayLocked||!r.accountLocked||!r.privilegedIPCRejected||!r.quickButton||!r.manualForm)process.exit(1);'

@@ -52,15 +52,16 @@ test('VPS transport reports unreachable, recovers, and does not reconnect after 
     assert.equal(tunnel.status().phase,'connecting');
     await tunnel.check();assert.equal(tunnel.status().phase,'unreachable');
     healthy=true;await tunnel.check();assert.equal(tunnel.status().phase,'online');
-    tunnel.child.emit('exit',1,null);assert.equal(tunnel.status().phase,'connecting');
-    assert.equal(tunnel.status().mode,'temporary');
-    assert.equal(spawned,2);
+    tunnel.child.emit('exit',1,null);assert.equal(tunnel.status().phase,'retrying');
+    assert.equal(tunnel.status().mode,'vps');
+    assert.equal(tunnel.status().url,config.publicOrigin+'/mcp');
+    assert.equal(spawned,1);
     tunnel.stop();assert.equal(tunnel.status().phase,'off');assert.equal(tunnel.desired,false);
-    assert.equal(spawned,2);assert.equal(killed,1);
+    assert.equal(spawned,1);assert.equal(killed,0);
   } finally {tunnel.stop();fs.rmSync(dir,{recursive:true,force:true});}
 });
 
-test('two unreachable VPS probes fall back to temporary HTTPS without restarting after STOP',async()=>{
+test('two unreachable VPS probes retain the configured permanent URL and do not change tunnel mode',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'redxdex-relay-'));
  try{
   const key=path.join(dir,'key'),known=path.join(dir,'known');
@@ -78,15 +79,14 @@ test('two unreachable VPS probes fall back to temporary HTTPS without restarting
   assert.equal(tunnel.status().mode,'vps');
   await tunnel.check();assert.equal(tunnel.status().phase,'unreachable');
   await tunnel.check();
-  assert.equal(tunnel.status().mode,'temporary');
-  assert.equal(tunnel.status().phase,'connecting');
-  assert.equal(started.length,2);
-  assert.equal(started[1].bin,process.execPath);
-  assert.deepEqual(started[1].args.slice(0,2),['tunnel','--url']);
+  assert.equal(tunnel.status().mode,'vps');
+  assert.equal(tunnel.status().phase,'unreachable');
+  assert.equal(tunnel.status().url,config.publicOrigin+'/mcp');
+  assert.equal(started.length,1);
   tunnel.stop();
   assert.equal(tunnel.desired,false);
   assert.equal(tunnel.status().phase,'off');
-  assert.equal(killed,2);
-  assert.equal(started.length,2);
+  assert.equal(killed,1);
+  assert.equal(started.length,1);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

@@ -18,7 +18,7 @@ The optional Accounts OIDC provider is documented in red-xai-accounts but produc
 4. Store application refresh credentials only in the OS encrypted credential store, except Quick Login remember_device=false, which must remain memory-only. Never persist password, OTP, PKCE verifier, authorization fragment, or website cookies.
 5. Test Windows/macOS/Linux GUI, remote/local MCP, failure/recovery and update flows before release.
 
-The standalone app/redxai-auth.cjs module and its tests are staged here, but main Electron startup and UI authentication gating have not been integrated.
+The main Electron startup, login page, privileged IPC gate and MCP HTTP gate are now integrated. Signed-out Windows GUI and direct HTTP security smoke tests passed; complete production login verification still depends on deployment of the Bridge Quick Login client and the existing Red-XAI Accounts service.
 
 ## Numeric application registry
 
