@@ -16,7 +16,7 @@ Red-XAI Bridge 0.10.15 adds a mandatory Red-XAI account sign-in gate to the desk
 - The Quick Login repository now includes first-party client 'bridge' with scope 'bridge.app', but its server deployment must be completed for the Quick Login button to work in production. In the meantime, the existing manual Red-XAI account sign-in service is available.
 - The numeric ID 6 central account-usage records are a server-side provisioning/migration proposal. Production table creation and event recording have NOT been performed; the included utility is dry-run by default and needs an authorized scoped server credential.
 - The optional CLI release link points to red-xai-installers releases. Public installer availability has not yet been verified.
-- The persistent custom-hostname Cloudflare Tunnel option is not included in this version. Temporary quick tunnels still change address when restarted.
+- Persistent named Cloudflare Tunnel mode and local-only MCP mode are included. A named tunnel requires the owner to configure a hostname and Cloudflare YAML outside the app; the release does not automatically provision Cloudflare DNS or tunnel credentials. Temporary quick tunnels still change address when restarted.
 - Windows installation packages are unsigned until a code signing identity is configured. macOS app packaging is separately gated on signing/notarization.
 
 ## Release verification
