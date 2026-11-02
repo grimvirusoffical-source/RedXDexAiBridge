@@ -6,6 +6,15 @@ async function onboard(f,a,label='Test device'){const key=crypto.generateKeyPair
 const code=expected=>e=>e.code===expected;
 const bridgeDeletionConfirmation=actor=>({verified:true,sub:actor.sub,scope:'bridge',clientId:'bridge',appNumber:6,membershipRemoved:true,sessionsRevoked:true});
 
+test('request nonce stays consumed through the inclusive signature validity boundary',async()=>{
+ const f=fixture(),{actor,key}=await onboard(f,f.actor('user_01'));
+ const signed=(timeMs)=>{const proof={method:'POST',path:'/redxai-bridge/api/me',bodyHash:crypto.createHash('sha256').update('{}').digest('hex'),deviceId:actor.deviceId,timeMs,nonce:crypto.randomBytes(24).toString('base64url')};proof.signature=crypto.sign(null,Buffer.from([proof.method,proof.path,proof.bodyHash,String(proof.timeMs),proof.nonce].join('\n')),key.privateKey).toString('base64url');return proof;};
+ const first=signed(f.now()+30000);await f.api.verifyDeviceProof(actor,first);f.tick(150000);
+ await f.api.verifyDeviceProof(actor,signed(f.now()));
+ await assert.rejects(f.api.verifyDeviceProof(actor,first),code('device_proof_replayed'));
+ f.tick(1);await assert.rejects(f.api.verifyDeviceProof(actor,first));
+});
+
 test('Bridge-only deletion refuses a missing central adapter before any revoke or local mutation; reset stays session-only',async()=>{
  const revoked=[],f=fixture({authority:{revokeBridgeSession:async(actor,options)=>revoked.push({sub:actor.sub,options})}}),{actor}=await onboard(f,f.actor('user_01'));assert.equal(f.api.readiness().bridgeDeletion,false);assert.equal((await f.api.dispatch(actor,'/me')).capabilities.bridgeDeletion,false);const before=await f.store.load();
  await assert.rejects(f.api.dispatch(actor,'/account/delete',{scope:'bridge',confirm:'DELETE BRIDGE ACCOUNT'}),code('bridge_membership_deletion_unavailable'));assert.deepEqual(await f.store.load(),before);assert.deepEqual(revoked,[]);

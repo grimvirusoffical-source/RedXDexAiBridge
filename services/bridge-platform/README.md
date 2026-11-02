@@ -2,6 +2,14 @@
 
 This module owns Bridge app membership, the shop catalog, device plugin grants, Axiom balances, weekly work leases, legal acceptance and app moderation. It does not replace the existing Red-XAI account service or its MFA/session checks.
 
+## Integration tools under review
+
+`canonical-auth-broker.cjs` is an unwired client for the primary website's observed password/MFA/me flow. It uses a fresh isolated transient cookie jar, exact subject/device/nonce binding, authoritative matching AMR, and a completion timestamp from its own successful transaction. Its receipt is not an owner grant or central-readiness proof. Real disposable-account verification, scoped upstream session cleanup, central revocation, app membership, moderation and deletion contracts remain unresolved. It never automatically logs out the primary account because the existing logout route's scope is unverified.
+
+[SANDBOX-E2E.md](SANDBOX-E2E.md) documents the resumable real-provider billing harness and protected credentials. The harness uses fixture identity and storage, requires actual signed Stripe delivery and a human Sandbox Checkout, and cannot establish production account readiness. No real-provider success is inferred from its mocked guard tests.
+
+[RETENTION.md](RETENTION.md) documents the dry-run planner and opt-in, revision-bound cleanup. The owner approved the proposed refund windows and retention periods on November 2, 2026, recorded in `app/legal-content.cjs` as scoped policy decisions. The full agreements remain draft; operator/address details are unset and production cleanup, external logs, support and backup lifecycle still require implementation and verification.
+
 ## Run the regression checks
 
 ```sh

@@ -3,6 +3,13 @@
 // version with the real business identity and applicable consumer terms.
 module.exports={
  version:'bridge-2026-11-v1',status:'draft',requiresReview:true,
+ // Owner approved these business-policy proposals on 2026-11-02. This is not
+ // approval of the complete agreements or evidence of deployed enforcement.
+ policyDecisions:{status:'approved-for-implementation',approvedDate:'2026-11-02',
+  refunds:{pluginRequestDays:14,whollyUnspentAxiomTopupRequestDays:14,firstSubscriptionChargeRequestDays:7},
+  retention:{verifiedAccountDeletionDays:30,rawSecurityIpDays:30,hashedIpAssociationDays:90,endedBanDays:90,permanentBanReviewMonths:12,detailedUsageWeeks:8,recoveryMonths:13,auditMonths:12,supportAfterClosureMonths:12,backupPurgeGoalDays:30,minimalFinancialYears:7},
+  exceptions:'Active bans, documented legal holds, financial obligations and applicable mandatory rights retain their draft qualifications.',
+  legalOperatorAndPublicAddress:'Not provided; owner requested none for now.',publicationReady:false},
  // Only the supplied contacts are final facts here. The proposed policies below
  // are not reviewed businessDetails and cannot satisfy deployment readiness.
  businessDetails:{
