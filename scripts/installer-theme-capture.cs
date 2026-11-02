@@ -9,9 +9,11 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Web.Script.Serialization;
 class InstallerThemeCapture {
  delegate bool EnumProc(IntPtr window, IntPtr data);
  [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left,Top,Right,Bottom; }
+ [StructLayout(LayoutKind.Sequential)] struct Point { public int X,Y; public Point(int x,int y){X=x;Y=y;} }
  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback,IntPtr data);
  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr data);
  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
@@ -25,18 +27,91 @@ class InstallerThemeCapture {
  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window,out Rect rect);
  [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr window,IntPtr dc,uint flags);
  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+ [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
+ [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr window);
+ [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+ [DllImport("user32.dll")] static extern int GetSystemMetrics(int metric);
+ [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window,IntPtr after,int x,int y,int width,int height,uint flags);
+ [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window,int attribute,out Rect rect,int size);
+ static object Bounds(Rect rect){return new{x=rect.Left,y=rect.Top,width=rect.Right-rect.Left,height=rect.Bottom-rect.Top};}
+ static bool Contains(Rect outer,Rect inner){return inner.Left>=outer.Left&&inner.Top>=outer.Top&&inner.Right<=outer.Right&&inner.Bottom<=outer.Bottom;}
+ static bool Unobscured(IntPtr window,Rect rect){
+   // Probe the entire owned fixture at an 8px grid before and after screen copy.
+   for(int y=rect.Top+10;y<rect.Bottom-10;y+=8)for(int x=rect.Left+10;x<rect.Right-10;x+=8)if(GetAncestor(WindowFromPoint(new Point(x,y)),2)!=window)return false;
+   return true;
+ }
+ static Bitmap CaptureEvidence(IntPtr window,IntPtr art,IntPtr progress,int owner,int native,bool fallback,Dictionary<string,int> canonical,string stem,out object evidence){
+   uint pid;GetWindowThreadProcessId(window,out pid);if(pid!=(uint)owner)throw new Exception("Screenshot target is not the owned fixture.");
+   Rect root,canvas=new Rect(),bar;GetWindowRect(window,out root);GetWindowRect(progress,out bar);
+   if(!Contains(root,bar))throw new Exception("Native progress is outside its fixture bounds.");
+   uint canvasOwner=0;bool above=false;int? actualFrame=null;
+   if(!fallback){
+     GetWindowRect(art,out canvas);GetWindowThreadProcessId(art,out canvasOwner);
+     if(GetAncestor(art,2)!=window||GetParent(art)!=GetParent(progress)||!Contains(root,canvas)||!Contains(canvas,bar))throw new Exception("Artwork/native fallback geometry is invalid.");
+     IntPtr sibling=GetWindow(art,2);for(int count=0;sibling!=IntPtr.Zero&&count<256;count++,sibling=GetWindow(sibling,2))if(sibling==progress){above=true;break;}
+     if(!above)throw new Exception("Artwork is not above the native fallback bar.");
+   }
+   Rect screenRoot=root,visibleFrame;try{if(DwmGetWindowAttribute(window,9,out visibleFrame,16)==0&&Contains(root,visibleFrame)&&Contains(visibleFrame,bar)&&(!fallback?Contains(visibleFrame,canvas):true))screenRoot=visibleFrame;}catch(EntryPointNotFoundException){}
+   string reason=null,mode=null;bool clear=false;Bitmap result=null;
+   if(Environment.UserInteractive){
+     var desktop=new Rect{Left=GetSystemMetrics(76),Top=GetSystemMetrics(77)};desktop.Right=desktop.Left+GetSystemMetrics(78);desktop.Bottom=desktop.Top+GetSystemMetrics(79);
+     if(!Contains(desktop,screenRoot))reason="fixture outside available desktop";
+     else{
+       // This changes only the CI-owned fixture's stacking, without activation/input.
+       if(!SetWindowPos(window,new IntPtr(-1),0,0,0,0,0x13))reason="owned fixture stacking unavailable";
+       else{
+         Thread.Sleep(50);clear=Unobscured(window,screenRoot);
+         if(!clear)reason="desktop is unavailable or fixture remains obscured";
+         else{
+           try{
+             result=new Bitmap(screenRoot.Right-screenRoot.Left,screenRoot.Bottom-screenRoot.Top,PixelFormat.Format32bppArgb);
+             using(var graphics=Graphics.FromImage(result))graphics.CopyFromScreen(screenRoot.Left,screenRoot.Top,0,0,result.Size,CopyPixelOperation.SourceCopy);
+             MakeOpaque(result);
+             if(!Unobscured(window,screenRoot)){result.Dispose();result=null;reason="fixture obscured during desktop copy";clear=false;}
+             else{
+               bool black=true;for(int y=0;y<result.Height&&black;y+=4)for(int x=0;x<result.Width;x+=4){var color=result.GetPixel(x,y);if(color.R+color.G+color.B>12){black=false;break;}}
+               if(black){result.Dispose();result=null;reason="headless desktop returned black pixels";}
+               else if(!fallback){using(var child=result.Clone(new Rectangle(canvas.Left-screenRoot.Left,canvas.Top-screenRoot.Top,200,232),PixelFormat.Format32bppArgb)){int frame;if(!canonical.TryGetValue(Hash(child),out frame))throw new InvalidOperationException("Unobscured desktop does not display a valid artwork frame.");if(Math.Abs(frame-native)>15)throw new InvalidOperationException("Desktop artwork does not match native progress.");actualFrame=frame;}}
+             }
+           }catch(System.ComponentModel.Win32Exception error){if(result!=null)result.Dispose();result=null;reason="desktop copy unavailable: "+error.NativeErrorCode;}
+         }
+       }
+     }
+   }else reason="runner has no interactive desktop";
+   if(result!=null)mode="desktopWindowRect";
+   else{
+     // PrintWindow(parent) does not consistently compose foreign-process child
+     // HWNDs. Preserve both actual captures and label the explicit composition.
+     result=Capture(window);result.Save(stem+".parent.png",ImageFormat.Png);
+     mode="printWindowParent";
+     if(!fallback){
+       using(var child=Capture(art)){
+         int frame;if(!canonical.TryGetValue(Hash(child),out frame)||Math.Abs(frame-native)>15)throw new Exception("Composite source is not a matching actual artwork frame.");
+         actualFrame=frame;child.Save(stem+".child.png",ImageFormat.Png);
+         using(var graphics=Graphics.FromImage(result))graphics.DrawImageUnscaled(child,canvas.Left-root.Left,canvas.Top-root.Top);
+       }
+       mode="printWindowComposite";
+     }
+   }
+   evidence=new{captureMode=mode,desktopUserInteractive=Environment.UserInteractive,desktopUnobscured=clear,desktopFallbackReason=reason,parentProcess=pid,parentBounds=Bounds(root),captureBounds=Bounds(mode=="desktopWindowRect"?screenRoot:root),nativeBounds=Bounds(bar),nativePercent=native,canvasOwner=canvasOwner,canvasBounds=fallback?null:Bounds(canvas),canvasAboveNativeBar=above,canvasFrame=actualFrame,rawParentCapture=mode.StartsWith("printWindow")?Path.GetFileName(stem+".parent.png"):null,rawChildCapture=mode=="printWindowComposite"?Path.GetFileName(stem+".child.png"):null};
+   return result;
+ }
  static string Hash(Bitmap bitmap) {
    var data=bitmap.LockBits(new Rectangle(0,0,bitmap.Width,bitmap.Height),ImageLockMode.ReadOnly,PixelFormat.Format32bppArgb);
    // GDI window captures do not define alpha; compare only the displayed RGB values.
    try { var raw=new byte[Math.Abs(data.Stride)*data.Height];Marshal.Copy(data.Scan0,raw,0,raw.Length);var rgb=new byte[bitmap.Width*bitmap.Height*3];int next=0;for(int y=0;y<bitmap.Height;y++)for(int x=0;x<bitmap.Width;x++){int offset=y*Math.Abs(data.Stride)+x*4;rgb[next++]=raw[offset];rgb[next++]=raw[offset+1];rgb[next++]=raw[offset+2];}using(var sha=SHA256.Create())return Convert.ToBase64String(sha.ComputeHash(rgb)); }
    finally { bitmap.UnlockBits(data); }
  }
+ static void MakeOpaque(Bitmap image){
+   var data=image.LockBits(new Rectangle(0,0,image.Width,image.Height),ImageLockMode.ReadWrite,PixelFormat.Format32bppArgb);
+   try{var bytes=new byte[Math.Abs(data.Stride)*data.Height];Marshal.Copy(data.Scan0,bytes,0,bytes.Length);for(int y=0;y<data.Height;y++)for(int x=0;x<image.Width;x++)bytes[y*Math.Abs(data.Stride)+x*4+3]=255;Marshal.Copy(bytes,0,data.Scan0,bytes.Length);}finally{image.UnlockBits(data);}
+ }
  static Bitmap Capture(IntPtr window) {
    Rect rect;GetWindowRect(window,out rect);var image=new Bitmap(rect.Right-rect.Left,rect.Bottom-rect.Top,PixelFormat.Format32bppArgb);
    bool printed;using(var graphics=Graphics.FromImage(image)){var dc=graphics.GetHdc();try{printed=PrintWindow(window,dc,2);}finally{graphics.ReleaseHdc(dc);}}
    if(!printed){image.Dispose();throw new Exception("Window capture failed.");}
-   var data=image.LockBits(new Rectangle(0,0,image.Width,image.Height),ImageLockMode.ReadWrite,PixelFormat.Format32bppArgb);
-   try{var bytes=new byte[Math.Abs(data.Stride)*data.Height];Marshal.Copy(data.Scan0,bytes,0,bytes.Length);for(int y=0;y<data.Height;y++)for(int x=0;x<image.Width;x++)bytes[y*Math.Abs(data.Stride)+x*4+3]=255;Marshal.Copy(bytes,0,data.Scan0,bytes.Length);}finally{image.UnlockBits(data);}
+   MakeOpaque(image);
    return image;
  }
  static int Main(string[] args) {
@@ -85,10 +160,11 @@ class InstallerThemeCapture {
            File.WriteAllLines(Path.Combine(args[2],"native-progress.csv"),lines);
            if(native<0||native>100||(!fallback&&Math.Abs(native-rendered)>15))throw new Exception("Rendered ring "+rendered+" does not follow native NSIS progress "+native+" (range "+low+".."+high+", position "+pos+").");
            if(changed&&snapshots<4&&rendered>=snapshots*20) {
-             using(var screenshot=Capture(window)) {
+             string stem=Path.Combine(args[2],(fallback?"fallback-":"theme-")+rendered.ToString("D3"));object evidence;
+             using(var screenshot=CaptureEvidence(window,art,progress,process.Id,native,fallback,canonical,stem,out evidence)) {
                int red=0;for(int y=0;y<screenshot.Height;y++)for(int x=0;x<screenshot.Width;x++){var color=screenshot.GetPixel(x,y);if(color.R>150&&color.G<120&&color.B<160)red++;}
                if(!fallback&&red<500)throw new Exception("Window screenshot does not show the red X/ring.");
-               screenshot.Save(Path.Combine(args[2],(fallback?"fallback-":"theme-")+rendered.ToString("D3")+".png"),ImageFormat.Png);snapshots++;
+               screenshot.Save(stem+".png",ImageFormat.Png);File.WriteAllText(stem+".capture.json",new JavaScriptSerializer().Serialize(evidence));snapshots++;
              }
            }
            if(terminate&&!helperKilled&&native>=40&&frames.Count>=3){
