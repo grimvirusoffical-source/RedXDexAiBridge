@@ -16,6 +16,18 @@ let lastNotifiedHandoffUrl=null;
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
 const LOGIN_UI=pathToFileURL(path.join(__dirname,'sign-in.html')).href;
 const CI_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_SMOKE_OUTPUT;
+const SMOKE_DIAGNOSTICS=CI_SMOKE&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted';
+const smokeEpoch=Date.now();
+function smokeTrace(event,detail={}){
+ if(!SMOKE_DIAGNOSTICS)return;
+ const record={utc:new Date().toISOString(),elapsedMs:Date.now()-smokeEpoch,pid:process.pid,platform:process.platform,event,...detail};
+ console.error('SMOKE_DIAGNOSTIC '+JSON.stringify(record));
+ try{fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.appendFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'smoke-lifecycle.jsonl'),JSON.stringify(record)+'\n');}catch{console.error('SMOKE_DIAGNOSTIC lifecycle file write failed');}
+}
+if(SMOKE_DIAGNOSTICS){
+ process.once('exit',code=>smokeTrace('node-exit',{code}));
+ app.on('quit',(_event,code)=>smokeTrace('app-quit',{code}));
+}
 const AUTH_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_AUTH_SMOKE_OUTPUT;
 const PUBLIC_IPC=new Set(['account:status','account:quick:start','account:quick:open','account:quick:poll','account:quick:cancel','account:manual:login','account:manual:2fa','account:logout','account:signup','cli:download','app:version','updates:status','app:updates','updates:download','updates:install']);
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
@@ -204,14 +216,16 @@ if(process.argv.includes('--vortex-diagnostic')){
      if(!visible)throw Error('GUI screenshot page did not open: '+page);
      const file=path.join(out,page==='overview'?'ui.png':'ui-'+page+'.png');
      console.error('SMOKE external page capture',page);
+     smokeTrace('external-capture-start',{page});
      const metadata=await require('../scripts/gui-smoke-capture.cjs').capture({window:win,output:file});
+     smokeTrace('external-capture-return',{page});
      metadata.page=page;metadata.version=result.version;fs.writeFileSync(file.replace(/\.png$/,'.capture.json'),JSON.stringify(metadata,null,2));
      result.uiCaptures.push({page,file:path.basename(file),captureMode:metadata.captureMode,sha256:metadata.sha256});
     }
     if(new Set(result.uiCaptures.map(capture=>capture.sha256)).size!==3)throw Error('GUI screenshots did not show three distinct rendered pages');
     result.uiCapture=true;result.uiCaptureMode='desktopOwnedClientRect';
    }else{
-   let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
+   let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);smokeTrace('capture-start',{attempt});const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);smokeTrace('capture-return',{attempt});if(image.isEmpty())throw Error('Empty UI capture');smokeTrace('png-write-start',{attempt});fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());smokeTrace('png-write-complete',{attempt});result.uiCapture=true;captureError=null;break;}catch(error){smokeTrace('capture-error',{attempt,errorName:error.name});captureError=error;}}
    if(captureError){
     result.uiCapture=false;result.uiCaptureError=captureError.message;
     try {
@@ -225,8 +239,10 @@ if(process.argv.includes('--vortex-diagnostic')){
     }
    }
    }
+   smokeTrace('result-write-start');
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
-   quitting=true;app.exit(0);return;
+   smokeTrace('result-write-complete');
+   quitting=true;smokeTrace('exit-requested',{code:0});app.exit(0);smokeTrace('exit-returned',{code:0});return;
   }
   if((CI_SMOKE||accountAuth.isSignedIn())&&process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
   if(gateway&&(process.argv.includes('--connect-remote')||remoteAutoConnect()))tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
