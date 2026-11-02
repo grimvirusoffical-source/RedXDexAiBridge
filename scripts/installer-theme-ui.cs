@@ -61,10 +61,11 @@ class InstallerThemeUI {
      // Match the existing installer window, including its DPI virtualization.
      try{SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(page));}catch(EntryPointNotFoundException){}
      context=new ApplicationContext();
-     art=CreateWindowEx(0x08000000,"STATIC","",0x5400000E,204,0,200,232,page,IntPtr.Zero,GetModuleHandle(null),IntPtr.Zero);
+     // Start hidden so a cold CLR/native-message round trip cannot expose an
+     // empty STATIC before its first verified progress frame is installed.
+     art=CreateWindowEx(0x08000000,"STATIC","",0x4400000E,204,0,200,232,page,IntPtr.Zero,GetModuleHandle(null),IntPtr.Zero);
      if(art==IntPtr.Zero)throw new InvalidOperationException("Could not create artwork window.");
      window=new Artwork(art,context);if(!SetProp(page,Property,art))throw new InvalidOperationException("Could not register artwork lifetime.");
-     if(!SetWindowPos(art,IntPtr.Zero,0,0,0,0,0x13))throw new InvalidOperationException("Could not position artwork above native fallback.");
      Trace("artwork child created");
      int last=-1;var lifetime=Stopwatch.StartNew();
      Action update=delegate{
@@ -75,7 +76,9 @@ class InstallerThemeUI {
        if(percent==last)return;
        IntPtr next;using(var frame=sprite.Clone(new Rectangle(0,percent*232,200,232),PixelFormat.Format24bppRgb))next=frame.GetHbitmap();
        IntPtr old=SendMessage(art,0x0172,IntPtr.Zero,next);
-       if(old!=IntPtr.Zero&&old!=current)DeleteObject(old);if(current!=IntPtr.Zero)DeleteObject(current);current=next;last=percent;
+       if(old!=IntPtr.Zero&&old!=current)DeleteObject(old);if(current!=IntPtr.Zero)DeleteObject(current);current=next;
+       if(last<0&&!SetWindowPos(art,IntPtr.Zero,0,0,0,0,0x53))throw new InvalidOperationException("Could not show initialized artwork above native fallback.");
+       last=percent;
        Trace("native frame="+percent);
      };
      timer=new System.Windows.Forms.Timer();timer.Interval=120;timer.Tick+=delegate{try{update();}catch(Exception error){Trace(error.GetType().Name+": "+error.Message);failed=true;context.ExitThread();}};
