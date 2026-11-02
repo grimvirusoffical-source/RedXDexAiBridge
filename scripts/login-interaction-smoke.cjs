@@ -1,0 +1,28 @@
+'use strict';
+const {app,BrowserWindow,ipcMain}=require('electron');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const data=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-login-ui-'));
+app.setPath('userData',data);
+const source=process.env.BRIDGE_TEST_ASAR?path.join(process.env.BRIDGE_TEST_ASAR,'app'):path.join(__dirname,'..','app');
+const calls=[],errors=[];
+const handle=(name,result)=>ipcMain.handle(name,()=>{calls.push(name);return result;});
+handle('account:status',{signedIn:false});handle('updates:status',{phase:'idle',canInstall:false});
+handle('account:quick:start',{code:'TEST1234',url:'https://example.com',interval:3});
+handle('account:quick:open',{});handle('account:quick:poll',{pending:true,interval:3});
+handle('account:quick:cancel',{});handle('account:manual:login',{requires2fa:true,methods:['totp']});
+app.whenReady().then(async()=>{
+ const win=new BrowserWindow({show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,preload:path.join(source,'preload.cjs')}});
+ win.webContents.on('console-message',e=>{if(e.level==='error'||e.level===3)errors.push(e.message);});
+ win.webContents.on('preload-error',(_e,_p,error)=>errors.push(error.message));
+ await win.loadFile(path.join(source,'sign-in.html'));
+ await win.webContents.executeJavaScript('document.getElementById("quick-start").click()');
+ await new Promise(r=>setTimeout(r,300));
+ const quick=await win.webContents.executeJavaScript('({pending:!document.getElementById("quick-pending").hidden,status:document.getElementById("status").textContent})');
+ await win.webContents.executeJavaScript('document.getElementById("quick-cancel").click()');
+ await new Promise(r=>setTimeout(r,100));
+ await win.webContents.executeJavaScript('document.getElementById("username").value="test-fixture";document.getElementById("password").value="test-only-not-a-real-password";document.getElementById("manual-form").requestSubmit()');
+ await new Promise(r=>setTimeout(r,300));
+ const manual=await win.webContents.executeJavaScript('({twoFactor:!document.getElementById("twofactor-form").hidden,status:document.getElementById("status").textContent})');
+ console.log(JSON.stringify({quick,manual,calls,errors},null,2));
+ app.exit(quick.pending&&manual.twoFactor&&calls.includes('account:quick:start')&&calls.includes('account:manual:login')&&!errors.length?0:1);
+}).catch(e=>{console.error(e.message);app.exit(1);});

@@ -1,3 +1,4 @@
+(()=>{
 'use strict';
 const bridge=window.bridge;
 const el=id=>document.getElementById(id);
@@ -57,3 +58,4 @@ el('login-update-download').onclick=()=>attempt(async()=>{
  msg(s.message||'Downloading verified Bridge update…');
 });
 el('login-update-install').onclick=()=>attempt(async()=>{await bridge.updateInstall();});
+})();
