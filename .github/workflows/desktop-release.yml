@@ -38,6 +38,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb xdotool libgtk-3-0 libnss3 libasound2t64 libsecret-1-0 dbus-x11 libfuse2t64
       - run: npm ci --no-audit --no-fund
+      - name: Install pinned server SDK for its offline contract test
+        run: npm ci --prefix services/bridge-platform --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
@@ -111,6 +113,7 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a --server-args='-screen 0 1440x1000x24' dbus-run-session -- node_modules/.bin/electron scripts/platform-ui-smoke.cjs --no-sandbox
       - name: Build Windows installer
+        id: windows-package
         if: runner.os == 'Windows'
         run: npm run package:win
         env:
@@ -137,7 +140,7 @@ jobs:
         shell: pwsh
         run: ./scripts/installer-silent-smoke.ps1
       - name: Capture Windows installer theme and compare it with native progress
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.windows-package.outcome == 'success' }}
         timeout-minutes: 5
         shell: pwsh
         run: ./scripts/installer-theme-smoke.ps1
@@ -206,6 +209,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install pinned server SDK for its offline contract test
+        run: npm ci --prefix services/bridge-platform --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - name: Compile macOS native input helper
         run: npm run prepare:native

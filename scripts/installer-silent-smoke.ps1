@@ -21,8 +21,12 @@ try {
   }
   if ((Get-FileHash -LiteralPath $native).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repo 'build/redxdex-control.exe')).Hash) { throw 'Installed native helper differs from the compiled helper.' }
   if ((Get-FileHash -LiteralPath $asar).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repo 'dist/win-unpacked/resources/app.asar')).Hash) { throw 'Installed ASAR differs from the packaged application.' }
-  $productVersion = (Get-Item -LiteralPath $executable).VersionInfo.ProductVersion
-  if ($productVersion -ne $version) { throw "Installed executable version does not match $version." }
+  if ((Get-FileHash -LiteralPath $executable).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repo 'dist/win-unpacked/RedXDexAiBridge.exe')).Hash) { throw 'Installed executable differs from the packaged application.' }
+  $versionInfo = (Get-Item -LiteralPath $executable).VersionInfo
+  # Win32 fixed resources use four numeric parts, while package.json uses SemVer.
+  $resourceVersion = @($versionInfo.ProductMajorPart, $versionInfo.ProductMinorPart, $versionInfo.ProductBuildPart, $versionInfo.ProductPrivatePart) -join '.'
+  @{ expectedVersion=$version; productVersion=$versionInfo.ProductVersion; fileVersion=$versionInfo.FileVersion; fixedProductVersion=$resourceVersion; executableHashVerified=$true } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $output 'installed-version.json')
+  if ($resourceVersion -ne "$version.0") { throw "Installed executable resource version '$resourceVersion' (text '$($versionInfo.ProductVersion)') does not match '$version.0'." }
   $env:BRIDGE_TEST_ASAR = $asar
   node -e 'const fs=require("node:fs"),a=require("@electron/asar"),p=JSON.parse(a.extractFile(process.env.BRIDGE_TEST_ASAR,"package.json"));if(p.version!==require("./package.json").version||p.main!=="app/main.cjs")throw Error("Installed ASAR metadata mismatch");for(const file of ["app/sign-in.html","app/sign-in.js","app/preload.cjs"])if(!a.extractFile(process.env.BRIDGE_TEST_ASAR,file).length)throw Error("Missing installed login file");'
   if ($LASTEXITCODE -ne 0) { throw 'Installed ASAR metadata check failed.' }

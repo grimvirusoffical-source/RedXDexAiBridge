@@ -117,7 +117,7 @@ function createStripeBilling({client,platform,webhookSecret,livemode=false,allow
  const event=e=>withProviderLock(()=>processEvent(e));
  return{create,portal,event,rawWebhook,extraRoutes,cancelSubscription:async(...args)=>withProviderLock(()=>cancelSubscription(...args)),status:()=>({mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret})};
 }
-function stripeClientFromEnvironment(env=process.env){const key=env.STRIPE_RESTRICTED_KEY;if(!/^(rk|sk)_(test|live)_/.test(key||''))throw Error('Server-side restricted Stripe credential is required');if(key.includes('_live_')&&env.BRIDGE_ENABLE_LIVE_PAYMENTS!=='yes')throw Error('Live payments are not enabled');const StripeClient=require('stripe');const client=new StripeClient(key,{apiVersion:'2026-09-30.endive',maxNetworkRetries:2});Object.defineProperty(client,'bridgeLivemode',{value:key.includes('_live_')});return client;}
+function stripeClientFromEnvironment(env=process.env){const key=env.STRIPE_RESTRICTED_KEY;if(!/^(rk|sk)_(test|live)_/.test(key||''))throw Error('Server-side restricted Stripe credential is required');if(key.includes('_live_')&&env.BRIDGE_ENABLE_LIVE_PAYMENTS!=='yes')throw Error('Live payments are not enabled');const StripeClient=require('stripe');const client=new StripeClient(key,{maxNetworkRetries:2});Object.defineProperty(client,'bridgeLivemode',{value:key.includes('_live_')});return client;}
 module.exports={createStripeBilling,stripeClientFromEnvironment};
 
 
