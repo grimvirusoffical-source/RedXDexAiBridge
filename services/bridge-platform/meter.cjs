@@ -15,7 +15,12 @@ function meter({route,actor,body,state,member,tier,usage,now,random,integer,fail
  if(session.leaseUntilMs<now())fail('work_session_expired',409);
  if(integer(body.sequence,1)!==session.lastSequence+1)fail('heartbeat_replayed_or_out_of_order',409);
  const elapsed=Math.min(session.reservedMs,Math.max(0,now()-session.lastMs));
- if(session.weekStartMs===u.weekStartMs){const refund=session.reservedMs-elapsed;u.activeMs=Math.max(0,u.activeMs-refund);if(session.mode==='terminal')u.terminalMs=Math.max(0,u.terminalMs-refund);}
+ if(session.weekStartMs===u.weekStartMs){const refund=session.reservedMs-elapsed;u.activeMs=Math.max(0,u.activeMs-refund);if(session.mode==='terminal')u.terminalMs=Math.max(0,u.terminalMs-refund);}else{
+  // A lease can span Monday's reset. Its old reservation disappeared with the
+  // old week, but work performed in the new week still consumes that allowance.
+  const currentWeekElapsed=Math.max(0,session.lastMs+elapsed-Math.max(session.lastMs,u.weekStartMs));
+  u.activeMs+=currentWeekElapsed;if(session.mode==='terminal')u.terminalMs+=currentWeekElapsed;
+ }
  const reservedMs=route==='/usage/stop'||body.working!==true?0:allowance(session.mode);
  if(!reservedMs)delete state.sessions[body.sessionId];else{reserve(session.mode,reservedMs);session.lastSequence=body.sequence;session.lastMs=now();session.leaseUntilMs=now()+reservedMs;session.weekStartMs=u.weekStartMs;session.reservedMs=reservedMs;}
  return{usage:structuredClone(u),chargedMs:elapsed,reservedMs,leaseUntilMs:reservedMs?now()+reservedMs:now(),stopped:reservedMs===0};

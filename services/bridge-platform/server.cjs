@@ -13,7 +13,8 @@ async function createProductionService(env=process.env){
  const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database||'redxai_accounts'});
  const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(legal.requiresReview&&!config.legalApproved)throw Error('Published agreement versions have not been approved');
  const platform=createPlatform({store,authority,ownerSubjects:config.ownerSubjects,licensePrivateKey:privateFile(config.licenseKeyFile),ipHashKey:privateFile(config.ipHashKeyFile).trim(),production:true,legalVersion:legal.version,legalDocuments:legal.documents});
- const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
+ if(!/^bpc_[A-Za-z0-9]+$/.test(priceCatalog.portalConfiguration||''))throw Error('An explicit mode-specific Billing Portal configuration is required');
+ const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
  const media=new PluginMediaStore(config.mediaDirectory);
  const authenticate=createNativeAuthenticator({resolvePrivileges:authority.resolvePrivileges,trustedIP:authority.trustedIP});
  const handler=createHandler({platform,authenticate,verifyCSRF:authority.verifyCSRF,rawWebhook:billing.rawWebhook,extraRoutes:async input=>{

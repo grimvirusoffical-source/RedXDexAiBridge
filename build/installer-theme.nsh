@@ -8,7 +8,6 @@
 !ifndef BUILD_UNINSTALLER
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW RedXThemeShow
   !define MUI_PAGE_CUSTOMFUNCTION_LEAVE RedXThemeLeave
-!endif
 
 Var RedXPage
 Var RedXProgress
@@ -18,16 +17,20 @@ Var RedXSourceDC
 Var RedXSourceBitmap
 Var RedXLastPercent
 Var RedXTimer
+!endif
 
 !macro RedXExtractTheme
+!ifndef BUILD_UNINSTALLER
   IfSilent redx_theme_extract_done
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\redx-theme"
   File /oname=progress.bmp "${BUILD_RESOURCES_DIR}\installer-theme\progress-sprite.bmp"
   SetOutPath "$INSTDIR"
 redx_theme_extract_done:
+!endif
 !macroend
 
+!ifndef BUILD_UNINSTALLER
 Function RedXThemeShow
   StrCpy $RedXSourceBitmap 0
   StrCpy $RedXSourceDC 0
@@ -148,3 +151,4 @@ Function RedXThemeLeave
   System::Call 'gdi32::DeleteDC(p $RedXSourceDC)'
   System::Call 'gdi32::DeleteObject(p $RedXSourceBitmap)'
 FunctionEnd
+!endif

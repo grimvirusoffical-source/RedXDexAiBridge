@@ -104,6 +104,9 @@ jobs:
       - name: Windows platform pages regression
         if: runner.os == 'Windows'
         run: .\node_modules\.bin\electron.cmd scripts/platform-ui-smoke.cjs
+      - name: Verify direct CLI download from the published public release
+        if: runner.os == 'Windows'
+        run: node scripts/cli-download-live-smoke.cjs
       - name: Linux platform pages regression
         if: runner.os == 'Linux'
         run: xvfb-run -a --server-args='-screen 0 1440x1000x24' dbus-run-session -- node_modules/.bin/electron scripts/platform-ui-smoke.cjs --no-sandbox

@@ -1,6 +1,7 @@
 {
   "mode": "sandbox",
   "account": "acct_1USFfGEKYCPRlM5G",
+  "portalConfiguration": "bpc_1UXJfYEKYCPRlM5GO6BUATfL",
   "products": {
     "bronze": {
       "product": "redxai_global_bronze_v1",

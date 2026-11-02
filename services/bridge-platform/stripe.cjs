@@ -1,7 +1,7 @@
 'use strict';
 const crypto=require('node:crypto'),{AsyncLocalStorage}=require('node:async_hooks'),{PlatformError}=require('./index.cjs');
 const reject=(code,status=503)=>{throw new PlatformError(code,status);},ref=x=>typeof x==='string'?x:x?.id;
-function createStripeBilling({client,platform,webhookSecret,livemode=false,allowLive=false,prices={},allowInlinePricesForTests=false,now=Date.now}={}){
+function createStripeBilling({client,platform,webhookSecret,livemode=false,allowLive=false,prices={},portalConfiguration,allowInlinePricesForTests=false,now=Date.now}={}){
  if(!client||!platform?.withBillingState)throw Error('Stripe instance and durable ledger required');
  if(typeof client.bridgeLivemode==='boolean'&&client.bridgeLivemode!==livemode)throw Error('Stripe credential mode mismatch');
  if(livemode&&!allowLive)throw Error('Live checkout is not enabled');
@@ -13,6 +13,7 @@ function createStripeBilling({client,platform,webhookSecret,livemode=false,allow
  async function create(actor,orderId){
   await platform.authorizePurchase(actor);if(!webhookSecret)reject('webhook_unconfigured');
   const o=await platform.getOrder(orderId);if(!o||o.sub!==actor.sub||o.deviceId!==actor.deviceId||o.fulfilled||o.expiresMs<=now())reject('checkout_order_unavailable',409);
+  if(o.kind==='subscription')await portalConfig();
   const selectedPrice=await pricing.prepare(o);
   const integrationIdentifier=await state(b=>{b.orders[o.id]??={};b.orders[o.id].integrationIdentifier??='redxai_bridge_'+Array.from(crypto.randomBytes(8),n=>String.fromCharCode(97+n%26)).join('');return b.orders[o.id].integrationIdentifier;});
   let customer=await state(b=>b.customers[o.sub]);if(!customer){const c=await client.customers.create({metadata:{redx_subject:o.sub,redx_app:'bridge'}},{idempotencyKey:'bridge-customer:'+o.sub});customer=c.id;await state(b=>{b.customers[o.sub]=customer;});}
@@ -103,7 +104,14 @@ function createStripeBilling({client,platform,webhookSecret,livemode=false,allow
   if(e.type==='checkout.session.async_payment_failed')return asyncFailed(o.id,e.id);
   return{ignored:true};
  }
- async function portal(actor){const customer=await state(b=>b.customers[actor.sub]);if(!customer)reject('billing_customer_not_found',404);const p=await client.billingPortal.sessions.create({customer,return_url:'https://red-xai.com/redxai-connect/developer'});const u=new URL(p.url);if(u.protocol!=='https:'||u.hostname!=='billing.stripe.com')reject('billing_portal_url_invalid');return{url:u.href};}
+ async function portalConfig(){
+  if(!/^bpc_[A-Za-z0-9]+$/.test(portalConfiguration||'')||typeof client.billingPortal?.configurations?.retrieve!=='function')reject('billing_portal_unconfigured');
+  const c=await client.billingPortal.configurations.retrieve(portalConfiguration),f=c.features;
+  if(c.id!==portalConfiguration||c.active!==true||c.livemode!==livemode||c.metadata?.redx_app!=='bridge'||c.metadata?.redx_scope!=='cancel_payment_methods_v1'||c.default_return_url!=='https://red-xai.com/redxai-connect/developer'||c.login_page?.enabled!==false||!f||f.payment_method_update?.enabled!==true||f.subscription_cancel?.enabled!==true||f.subscription_cancel.mode!=='at_period_end'||f.subscription_cancel.proration_behavior!=='none'||f.subscription_cancel.retention_options?.coupons?.length||f.subscription_update?.enabled!==false||f.customer_update?.enabled!==false||f.invoice_history?.enabled!==false)reject('billing_portal_configuration_unsafe');
+  for(const [name,value]of Object.entries(f))if(!['payment_method_update','subscription_cancel'].includes(name)&&value?.enabled!==false)reject('billing_portal_configuration_unsafe');
+  return c.id;
+ }
+ async function portal(actor){const customer=await state(b=>b.customers[actor.sub]);if(!customer)reject('billing_customer_not_found',404);const configuration=await portalConfig(),p=await client.billingPortal.sessions.create({customer,configuration,return_url:'https://red-xai.com/redxai-connect/developer'});if(ref(p.configuration)!==configuration||ref(p.customer)!==customer)reject('billing_portal_configuration_changed');if(p.livemode!==livemode)reject('stripe_mode_mismatch');const u=new URL(p.url);if(u.protocol!=='https:'||u.hostname!=='billing.stripe.com')reject('billing_portal_url_invalid');return{url:u.href};}
  async function rawWebhook(req,res){let size=0;const chunks=[];try{for await(const b of req){size+=b.length;if(size>1048576)reject('webhook_too_large',413);chunks.push(b);}if(!webhookSecret)reject('webhook_unconfigured');let verified;try{verified=client.webhooks.constructEvent(Buffer.concat(chunks),req.headers['stripe-signature'],webhookSecret);}catch{reject('webhook_signature_invalid',400);}const result=await event(verified);res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));}catch(e){res.writeHead(e.status||503,{'content-type':'application/json'});res.end(JSON.stringify({error:e.code||'payment_event_unavailable'}));}}
  async function extraRoutes({route,actor,body}){if(route==='/checkout/create')return create(actor,body.orderId);if(route==='/billing/portal')return portal(actor);if(route==='/admin/stripe/status'){const me=await platform.dispatch(actor,'/me');if(!me.capabilities?.configureStripe)reject('owner_required',403);return{configured:true,mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret,dashboardUrl:livemode?'https://dashboard.stripe.com/':'https://dashboard.stripe.com/test/'};}}
  const event=e=>withProviderLock(()=>processEvent(e));
