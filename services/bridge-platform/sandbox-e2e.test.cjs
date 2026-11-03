@@ -2,7 +2,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http');
 const {ACCOUNT,HOOK,PINNED_API_VERSION,REQUIRED_EVENTS,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,directEndpointURL,webhookOrigin,webhookPath,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute}=require('./sandbox-e2e.cjs');
 const catalog=require('./sandbox-catalog.json'),code=value=>error=>error.code===value;
+const {recoverAttachedClock,advanceOwnedClock,advanceRenewal,cleanup}=require('./sandbox-e2e.cjs');
 function configuration(){const temp=fs.realpathSync(os.tmpdir());return{account:ACCOUNT,mode:'sandbox',scenario:'subscription',apiKeyFile:path.join(temp,'private-rak'),webhookSecretFile:path.join(temp,'private-hook'),runDirectory:path.join(temp,'isolated-bridge-run'),allowSandboxMutations:true};}
+async function unusedFixturePort(){const server=http.createServer();await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;}
 function readonlyClient(){
  const writes=[],reads=[],registry=new Map();
  for(const [sku,item]of Object.entries(catalog.products))registry.set(item.price,{id:item.price,active:true,livemode:false,currency:'usd',unit_amount:item.amountCents??null,product:{id:item.product,active:true},...(sku==='axioms'?{custom_unit_amount:{minimum:501}}:sku==='workflow-checkpoints'?{}:{recurring:{interval:'month',interval_count:1}})});
@@ -68,7 +70,7 @@ test('a failed direct endpoint preflight stops before creating fixture files or 
  try{await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),code('sandbox_endpoint_configuration_mismatch'));assert.equal(fs.existsSync(f.c.runDirectory),false);assert.equal(f.writes.length,0);}finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
 test('direct manifests bind both the preassigned run ID and endpoint and cannot resume under another destination',async()=>{
- const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-direct-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');f.c.runDirectory=directory;fs.chmodSync(directory,0o700);let attempts=0;
+ const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-direct-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');f.c.runDirectory=directory;f.c.port=await unusedFixturePort();fs.chmodSync(directory,0o700);let attempts=0;
  f.client.customers.create=async()=>{attempts++;throw stop;};
  try{
   await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),error=>error===stop);assert.equal(attempts,1);
@@ -78,7 +80,7 @@ test('direct manifests bind both the preassigned run ID and endpoint and cannot 
  }finally{fs.rmSync(directory,{recursive:true,force:true});}
 });
 test('a new temporary run saves its exact origin and status cannot resume it on a changed or default origin',async()=>{
- const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-tunnel-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');fs.chmodSync(directory,0o700);Object.assign(f.c,{runDirectory:directory,allowTemporaryTunnel:true,testWebhookOrigin:'https://locally-owned-fixture.trycloudflare.com'});f.endpoint.url=directEndpointURL(f.c.runId,f.c);f.client.customers.create=async()=>{throw stop;};
+ const directory=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'bridge-sandbox-tunnel-run-')),f=directFixture(),stop=new Error('fixture_stop_before_provider_write');fs.chmodSync(directory,0o700);Object.assign(f.c,{runDirectory:directory,port:await unusedFixturePort(),allowTemporaryTunnel:true,testWebhookOrigin:'https://locally-owned-fixture.trycloudflare.com'});f.endpoint.url=directEndpointURL(f.c.runId,f.c);f.client.customers.create=async()=>{throw stop;};
  try{
   await assert.rejects(execute('run',f.c,{client:f.client,secret:'whsec_fixture'}),error=>error===stop);const run=JSON.parse(fs.readFileSync(path.join(directory,'run-state.json'),'utf8'));assert.equal(run.webhookOrigin,f.c.testWebhookOrigin);assert.equal((await execute('status',f.c)).productionReady,false);
   await assert.rejects(execute('status',{...f.c,testWebhookOrigin:'https://another-fixture.trycloudflare.com'}),code('sandbox_run_mismatch'));
@@ -149,4 +151,88 @@ test('a renewal needs the exact new provider period, signed delivery and members
  const run={subject:'sandbox_subject',customerId:'cus_fixture',subscriptionId:'sub_fixture',initialPeriodEnd:100,renewalStartedAtMs:500};
  const base={run,expectedEnd:200,binding:{subscriptionId:run.subscriptionId,sub:run.subject,customerId:run.customerId},order:{sub:run.subject,subscriptionId:run.subscriptionId,kind:'subscription',sku:'gold',amountCents:799,periodEndMs:200000},me:{sub:run.subject,tier:'gold',subscriptions:[{providerId:run.subscriptionId,tier:'gold',source:'stripe',untilMs:200000}]},proof:{mode:'sandbox',receivedMs:600}};
  assert.equal(renewalStateMatches(base),true);assert.equal(renewalStateMatches({...base,me:{...base.me,subscriptions:[{providerId:run.subscriptionId,tier:'gold',source:'stripe',untilMs:100000}]}}),false);assert.equal(renewalStateMatches({...base,proof:{mode:'sandbox',receivedMs:400}}),false);assert.equal(renewalStateMatches({...base,proof:null}),false);assert.equal(renewalStateMatches({...base,order:{...base.order,periodEndMs:100000}}),false);assert.equal(renewalStateMatches({...base,binding:{...base.binding,customerId:'cus_other'}}),false);
+});
+
+function clockFixture(){
+ const run={id:'f'.repeat(32),subject:'sandbox_e2e_'+'f'.repeat(32),customerId:'cus_fixture',sessionId:'cs_test_fixture',scenario:'subscription',stage:'grant_verified',clockStartTime:100};
+ const customer={id:run.customerId,livemode:false,test_clock:'clock_fixture',metadata:{redx_e2e:run.id,redx_subject:run.subject}},clock={id:'clock_fixture',livemode:false,name:'Bridge Sandbox '+run.id,frozen_time:100,status:'advancing'},calls=[];
+ const client={customers:{retrieve:async()=>customer,list:async()=>({data:[customer],has_more:false}),del:async()=>{calls.push('customer-delete');return{id:run.customerId,deleted:true};}},testHelpers:{testClocks:{retrieve:async()=>clock,create:async()=>{calls.push('clock-create');throw Error('Unexpected create');},del:async()=>{calls.push('clock-delete');return{id:clock.id,deleted:true};}}}};
+ return{run,customer,clock,client,calls};
+}
+test('lost-response recovery reuses the exact attached run clock even when saved start is now stale',async()=>{
+ const f=clockFixture();let saved=0;const before=f.run.clockStartTime;assert.equal(await recoverAttachedClock(f.client,f.run,f.customer,()=>saved++),true);assert.equal(f.run.clockId,f.clock.id);assert.equal(f.run.clockStartTime,before);assert.equal(saved,1);assert.deepEqual(f.calls,[]);
+});
+test('attached clock recovery refuses another run, mode, clock binding or unverifiable saved start',async()=>{
+ for(const change of [f=>f.clock.name='Bridge Sandbox other',f=>f.clock.livemode=true,f=>f.clock.id='clock_other',f=>f.customer.metadata.redx_subject='other',f=>f.run.clockId='clock_other',f=>delete f.run.clockStartTime,f=>f.clock.frozen_time=99,f=>f.client.customers.list=async()=>({data:[f.customer,{id:'cus_other'}],has_more:false}),f=>f.client.customers.list=async()=>({data:[f.customer],has_more:true})]){
+  const f=clockFixture();change(f);let saved=0;await assert.rejects(recoverAttachedClock(f.client,f.run,f.customer,()=>saved++));assert.equal(saved,0);assert.deepEqual(f.calls,[]);
+ }
+});
+function renewalFixture(){
+ const f=clockFixture(),period=Math.floor(Date.now()/1000)+86400;delete f.customer.test_clock;
+ const subscription={id:'sub_fixture',livemode:false,customer:f.run.customerId,metadata:{redx_subject:f.run.subject},current_period_end:period};
+ f.client.checkout={sessions:{retrieve:async()=>({livemode:false,customer:f.run.customerId,subscription})}};
+ return f;
+}
+test('a stale unattached saved clock start fails closed without changing idempotency arguments',async()=>{
+ const f=renewalFixture(),before=f.run.clockStartTime;await assert.rejects(advanceRenewal(f.client,f.run,{}, {},0,()=>{}),code('sandbox_clock_start_stale'));assert.equal(f.run.clockStartTime,before);assert.equal(f.run.clockId,undefined);assert.deepEqual(f.calls,[]);
+});
+test('renewal resumes after a lost clock-create response without creating another clock or changing saved start',async()=>{
+ const f=renewalFixture();delete f.run.clockStartTime;let attempts=0,params,key;
+ f.client.testHelpers.testClocks.create=async(value,options)=>{attempts++;params=structuredClone(value);key=options.idempotencyKey;f.customer.test_clock=f.clock.id;f.clock.frozen_time=value.frozen_time;throw Error('Lost create response');};
+ await assert.rejects(advanceRenewal(f.client,f.run,{}, {},0,()=>{}),/Lost create response/);assert.equal(f.run.clockId,undefined);const start=f.run.clockStartTime;
+ assert.equal(await advanceRenewal(f.client,f.run,{}, {},0,()=>{}),false);assert.equal(attempts,1);assert.equal(f.run.clockId,f.clock.id);assert.equal(f.run.clockStartTime,start);assert.equal(params.frozen_time,start);assert.equal(key,'bridge-e2e-clock:'+f.run.id);
+});
+test('customer cleanup requires exact delete acknowledgment and a fresh provider tombstone',async()=>{
+ for(const variant of ['no-ack','wrong-id','still-present','confirmed']){
+  const f=clockFixture();delete f.run.clockStartTime;delete f.run.sessionId;delete f.customer.test_clock;let deleted=false;
+  f.client.customers.del=async()=>{deleted=true;return variant==='no-ack'?undefined:{id:variant==='wrong-id'?'cus_other':f.run.customerId,deleted:true};};
+  f.client.customers.retrieve=async()=>deleted&&variant==='confirmed'?{id:f.run.customerId,deleted:true}:f.customer;
+  if(variant==='confirmed')assert.equal((await cleanup(f.client,f.run,()=>{})).cleaned,true);else{await assert.rejects(cleanup(f.client,f.run,()=>{}),code('sandbox_cleanup_unconfirmed'));assert.notEqual(f.run.cleaned,true);}
+ }
+});
+test('clock cleanup recovers an unsaved attachment and cannot claim success while clock or customer remains',async()=>{
+ for(const remaining of ['clock','customer','neither']){
+  const f=clockFixture();let deleted=false;f.client.testHelpers.testClocks.del=async()=>{deleted=true;return{id:f.clock.id,deleted:true};};
+  f.client.testHelpers.testClocks.retrieve=async()=>{if(deleted&&remaining!=='clock'){const error=Error('Missing');error.statusCode=404;error.code='resource_missing';throw error;}return f.clock;};
+  f.client.customers.retrieve=async()=>deleted&&remaining!=='customer'?{id:f.run.customerId,deleted:true}:f.customer;
+  if(remaining==='neither'){assert.equal((await cleanup(f.client,f.run,()=>{})).cleaned,true);assert.equal(f.run.clockId,f.clock.id);}else{await assert.rejects(cleanup(f.client,f.run,()=>{}),code('sandbox_cleanup_unconfirmed'));assert.notEqual(f.run.cleaned,true);}
+ }
+});
+test('cleanup resumes a lost delete response only with prior authorization and provider absence proof',async()=>{
+ const f=clockFixture();f.run.clockId=f.clock.id;f.run.cleanupAuthorized=f.run.customerId;f.client.customers.retrieve=async()=>({id:f.run.customerId,deleted:true});
+ await assert.rejects(cleanup(f.client,f.run,()=>{}),code('sandbox_cleanup_unconfirmed'));assert.notEqual(f.run.cleaned,true);
+ f.client.testHelpers.testClocks.retrieve=async()=>{const error=Error('Not authorized');error.statusCode=403;error.code='resource_missing';throw error;};await assert.rejects(cleanup(f.client,f.run,()=>{}));assert.notEqual(f.run.cleaned,true);
+ f.client.testHelpers.testClocks.retrieve=async()=>{const error=Error('Missing');error.statusCode=404;error.code='resource_missing';throw error;};assert.equal((await cleanup(f.client,f.run,()=>{})).cleaned,true);assert.deepEqual(f.calls,[]);
+ delete f.run.cleanupAuthorized;delete f.run.cleaned;await assert.rejects(cleanup(f.client,f.run,()=>{}),code('sandbox_customer_ownership_mismatch'));assert.notEqual(f.run.cleaned,true);
+});
+test('lost customer delete response resumes only from an exact prior authorized provider 404',async()=>{
+ const f=clockFixture();delete f.customer.test_clock;delete f.run.sessionId;delete f.run.clockStartTime;f.run.cleanupAuthorized=f.run.customerId;
+ f.client.customers.retrieve=async()=>{const error=Error('Missing');error.statusCode=404;error.code='resource_missing';throw error;};assert.equal((await cleanup(f.client,f.run,()=>{})).cleaned,true);assert.deepEqual(f.calls,[]);
+ delete f.run.cleaned;delete f.run.cleanupAuthorized;await assert.rejects(cleanup(f.client,f.run,()=>{}));assert.notEqual(f.run.cleaned,true);
+});
+test('an old cleaned flag cannot bypass fresh cleanup verification',async()=>{
+ const f=clockFixture();f.run.cleaned=true;f.run.clockId=f.clock.id;f.run.cleanupAuthorized=f.run.customerId;let saved=0;f.client.customers.retrieve=async()=>({id:f.run.customerId,deleted:true});await assert.rejects(cleanup(f.client,f.run,()=>saved++),code('sandbox_cleanup_unconfirmed'));assert.notEqual(f.run.cleaned,true);assert.equal(saved,1);
+});
+test('clock initialization becomes ready, advances the saved target, then waits for ready-at-target',async()=>{
+ const f=clockFixture();f.run.clockId=f.clock.id;f.run.renewalTarget=200;const events=[],deadlines=[];let advanced=false,reads=0;
+ f.client.testHelpers.testClocks.retrieve=async()=>{reads++;const phase=advanced?'target':'start';events.push(phase+':'+reads);return{...f.clock,status:reads%2?'advancing':'ready',frozen_time:advanced?200:100};};
+ f.client.testHelpers.testClocks.advance=async(id,params,options)=>{events.push('advance');assert.equal(id,f.run.clockId);assert.deepEqual(params,{frozen_time:200});assert.equal(options.idempotencyKey,'bridge-e2e-renewal:'+f.run.id);advanced=true;};
+ const wait=async(check,deadline)=>{deadlines.push(deadline);for(let i=0;i<5;i++){const value=await check();if(value)return value;}return null;};
+ assert.equal(await advanceOwnedClock(f.client,f.run,300000,{wait,now:()=>1000}),true);assert.deepEqual(events,['start:1','start:2','advance','target:3','target:4']);assert.deepEqual(deadlines,[121000,121000]);assert.equal(f.run.renewalTarget,200);
+});
+test('clock resume after a lost advance response reuses the same clock and never advances past the saved target',async()=>{
+ const f=clockFixture();f.run.clockId=f.clock.id;f.run.renewalTarget=200;let phase='start',advances=0;const options={now:()=>1000,wait:async check=>{for(let i=0;i<5;i++){const current=await check();if(current)return current;}return null;}};
+ f.client.testHelpers.testClocks.retrieve=async()=>({...f.clock,status:phase==='busy'?'advancing':'ready',frozen_time:phase==='start'?100:200});
+ f.client.testHelpers.testClocks.advance=async()=>{advances++;phase='busy';throw Error('Lost advance response');};
+ await assert.rejects(advanceOwnedClock(f.client,f.run,300000,options),/Lost advance response/);phase='done';assert.equal(await advanceOwnedClock(f.client,f.run,300000,options),true);assert.equal(advances,1);assert.equal(f.run.clockId,f.clock.id);assert.equal(f.run.renewalTarget,200);
+});
+test('clock initialization timeout does not advance or claim renewal proof',async()=>{
+ const f=clockFixture();f.run.clockId=f.clock.id;f.run.renewalTarget=200;let advances=0;f.client.testHelpers.testClocks.advance=async()=>{advances++;};
+ assert.equal(await advanceOwnedClock(f.client,f.run,2000,{now:()=>1000,wait:async(check,deadline)=>{assert.equal(deadline,2000);assert.equal(await check(),null);return null;}}),false);assert.equal(advances,0);assert.equal(f.run.evidence,undefined);
+});
+test('every clock readiness poll rechecks exact ownership and mode before accepting progress',async()=>{
+ for(const change of [clock=>clock.id='clock_other',clock=>clock.livemode=true,clock=>clock.name='Bridge Sandbox other']){
+  const f=clockFixture();f.run.clockId=f.clock.id;f.run.renewalTarget=200;let reads=0,advances=0;f.client.testHelpers.testClocks.retrieve=async()=>{const value={...f.clock,status:'ready',frozen_time:reads++?200:100};if(reads===2)change(value);return value;};f.client.testHelpers.testClocks.advance=async()=>{advances++;};
+  await assert.rejects(advanceOwnedClock(f.client,f.run,300000,{now:()=>1000,wait:async check=>check()}),code('sandbox_clock_ownership_mismatch'));assert.equal(advances,1);assert.equal(f.run.evidence,undefined);
+ }
 });

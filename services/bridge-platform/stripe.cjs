@@ -7,7 +7,39 @@ function createStripeBilling({client,platform,webhookSecret,webhookEndpointId,li
  if(livemode&&!allowLive)throw Error('Live checkout is not enabled');
  const processing=new AsyncLocalStorage(),proof=()=>({verified:true,...(processing.getStore()?{billingFence:processing.getStore()}:{})});
  const state=fn=>platform.withBillingState(b=>{const fence=processing.getStore();if(fence&&(b.processing?.token!==fence||b.processing.untilMs<=now()))reject('payment_processing_fence_expired',503);b.orders??={};b.customers??={};b.subscriptions??={};return fn(b);});
- async function withProviderLock(fn){if(processing.getStore())return fn();const token=crypto.randomBytes(24).toString('hex');await state(b=>{if(b.processing?.untilMs>now())reject('payment_processing_busy',503);b.processing={token,untilMs:now()+300000};});try{return await processing.run(token,fn);}finally{await processing.run(null,()=>state(b=>{if(b.processing?.token===token)delete b.processing;}));}}
+ const providerQueue=[],PROVIDER_QUEUE_LIMIT=64,PROVIDER_QUEUE_WAIT_MS=25000;let providerActive=false,activeFence=null;
+ const queuedCheck=entry=>{if(entry.signal?.aborted)reject('payment_processing_cancelled',503);if(now()>=entry.deadlineMs)reject('payment_processing_busy',503);};
+ async function providerTask(entry){
+  const token=crypto.randomBytes(24).toString('hex');
+  const untilMs=await state(b=>{queuedCheck(entry);if(b.processing?.untilMs>now())reject('payment_processing_busy',503);const untilMs=now()+300000;b.processing={token,untilMs};return untilMs;});
+  activeFence={token,untilMs};
+  try{queuedCheck(entry);return await processing.run(token,entry.fn);}
+  finally{activeFence=null;await processing.run(null,()=>state(b=>{if(b.processing?.token===token)delete b.processing;}));}
+ }
+ function drainProviderQueue(){
+  if(providerActive)return;
+  while(providerQueue.length){
+   const entry=providerQueue.shift();entry.detach();
+   try{queuedCheck(entry);}catch(error){entry.reject(error);continue;}
+   providerActive=true;
+   // Never inherit an old worker's AsyncLocalStorage token into another job.
+   processing.run(null,()=>providerTask(entry)).then(entry.resolve,entry.reject).finally(()=>{providerActive=false;drainProviderQueue();});return;
+  }
+ }
+ function withProviderLock(fn,{signal}={}){
+  const inherited=processing.getStore();
+  if(inherited){if(activeFence?.token!==inherited||activeFence.untilMs<=now())return Promise.reject(new PlatformError('payment_processing_fence_expired',503));return Promise.resolve().then(()=>{if(activeFence?.token!==inherited||activeFence.untilMs<=now())reject('payment_processing_fence_expired',503);return fn();});}
+  if(signal?.aborted)return Promise.reject(new PlatformError('payment_processing_cancelled',503));
+  if(providerQueue.length+(providerActive?1:0)>=PROVIDER_QUEUE_LIMIT)return Promise.reject(new PlatformError('payment_processing_busy',503));
+  return new Promise((resolve,rejectPromise)=>{
+   const entry={fn,signal,resolve,reject:rejectPromise,deadlineMs:now()+PROVIDER_QUEUE_WAIT_MS};let timer;
+   const cancel=code=>{const index=providerQueue.indexOf(entry);if(index<0)return;providerQueue.splice(index,1);entry.detach();rejectPromise(new PlatformError(code,503));};
+   const aborted=()=>cancel('payment_processing_cancelled');
+   entry.detach=()=>{clearTimeout(timer);signal?.removeEventListener('abort',aborted);};
+   timer=setTimeout(()=>cancel('payment_processing_busy'),PROVIDER_QUEUE_WAIT_MS);timer.unref?.();signal?.addEventListener('abort',aborted,{once:true});
+   providerQueue.push(entry);drainProviderQueue();
+  });
+ }
  const pricing=require('./stripe-prices.cjs').createPriceVerifier({client,prices,livemode,allowInlinePricesForTests});
  const period=s=>(s.current_period_end??s.items?.data?.[0]?.current_period_end??0)*1000;
  async function create(actor,orderId){
@@ -137,9 +169,9 @@ function createStripeBilling({client,platform,webhookSecret,webhookEndpointId,li
   try{if(!/^we_[A-Za-z0-9]+$/.test(webhookEndpointId||'')||!webhookSecret||typeof platform.getBillingState!=='function')return result;const endpoint=await client.webhookEndpoints.retrieve(webhookEndpointId),proof=(await platform.getBillingState()).webhookProof,version=client.getApiField('version');const required=['checkout.session.completed','checkout.session.async_payment_succeeded','checkout.session.async_payment_failed','customer.subscription.updated','customer.subscription.deleted','invoice.paid','invoice.payment_failed','charge.refunded','charge.dispute.created','charge.dispute.updated','charge.dispute.closed','radar.early_fraud_warning.created'];result.webhookVerified=endpoint.id===webhookEndpointId&&endpoint.status==='enabled'&&endpoint.livemode===livemode&&endpoint.url==='https://red-xai.com/redxai-bridge/api/stripe/webhook'&&typeof version==='string'&&endpoint.api_version===version&&Array.isArray(endpoint.enabled_events)&&required.every(type=>endpoint.enabled_events.includes(type)||endpoint.enabled_events.includes('*'))&&proof?.endpointId===webhookEndpointId&&proof.mode===result.mode&&proof.fingerprint===webhookFingerprint()&&Number.isSafeInteger(proof.receivedMs)&&proof.receivedMs>0&&proof.receivedMs<=now();}catch{}
   return result;
  }
- async function rawWebhook(req,res){let size=0;const chunks=[];try{for await(const b of req){size+=b.length;if(size>1048576)reject('webhook_too_large',413);chunks.push(b);}if(!webhookSecret)reject('webhook_unconfigured');let verified;try{verified=client.webhooks.constructEvent(Buffer.concat(chunks),req.headers['stripe-signature'],webhookSecret);}catch{reject('webhook_signature_invalid',400);}const result=await event(verified);await state(b=>{b.webhookProof={endpointId:webhookEndpointId||null,mode:livemode?'live':'sandbox',fingerprint:webhookFingerprint(),receivedMs:now()};});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));}catch(e){res.writeHead(e.status||503,{'content-type':'application/json'});res.end(JSON.stringify({error:e.code||'payment_event_unavailable'}));}}
+ async function rawWebhook(req,res){let size=0;const chunks=[],controller=new AbortController(),closed=()=>{if(res.writableEnded!==true)controller.abort();};res.once?.('close',closed);try{for await(const b of req){size+=b.length;if(size>1048576)reject('webhook_too_large',413);chunks.push(b);}if(!webhookSecret)reject('webhook_unconfigured');let verified;try{verified=client.webhooks.constructEvent(Buffer.concat(chunks),req.headers['stripe-signature'],webhookSecret);}catch{reject('webhook_signature_invalid',400);}const result=await event(verified,{signal:controller.signal});await state(b=>{b.webhookProof={endpointId:webhookEndpointId||null,mode:livemode?'live':'sandbox',fingerprint:webhookFingerprint(),receivedMs:now()};});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));}catch(e){if(res.destroyed)return;res.writeHead(e.status||503,{'content-type':'application/json'});res.end(JSON.stringify({error:e.code||'payment_event_unavailable'}));}finally{res.off?.('close',closed);}}
  async function extraRoutes({route,actor,body}){if(route==='/checkout/create')return create(actor,body.orderId);if(route==='/billing/portal')return portal(actor);if(route==='/admin/stripe/status'){const me=await platform.dispatch(actor,'/me');if(!me.capabilities?.configureStripe)reject('owner_required',403);return{configured:true,mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret,dashboardUrl:livemode?'https://dashboard.stripe.com/':'https://dashboard.stripe.com/test/'};}}
- const event=e=>withProviderLock(()=>processEvent(e));
+ const event=(e,options)=>withProviderLock(()=>processEvent(e),options);
  return{create,portal,event,rawWebhook,extraRoutes,verifyReadiness,cancelSubscription:async(...args)=>withProviderLock(()=>cancelSubscription(...args)),status:()=>({mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret})};
 }
 function stripeClientFromEnvironment(env=process.env){const key=env.STRIPE_RESTRICTED_KEY;if(!/^(rk|sk)_(test|live)_/.test(key||''))throw Error('Server-side restricted Stripe credential is required');if(key.includes('_live_')&&env.BRIDGE_ENABLE_LIVE_PAYMENTS!=='yes')throw Error('Live payments are not enabled');const StripeClient=require('stripe');const client=new StripeClient(key,{maxNetworkRetries:2});Object.defineProperty(client,'bridgeLivemode',{value:key.includes('_live_')});return client;}

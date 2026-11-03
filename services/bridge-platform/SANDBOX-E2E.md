@@ -195,6 +195,8 @@ After successful Checkout, keep the process and signed delivery channel running.
 
 Resume a timed-out run with the same `run` command and configuration. Its exact provider objects and idempotency keys are reused. Private config and run paths must be canonical paths outside Git and without any symlink, junction or other reparse ancestor. Windows path guards inspect filesystem attributes with a read-only .NET call; they do not load or execute the blocked intake script. Only one process can write a run directory; `run.lock` prevents a concurrent driver. A crash can leave that lock. Confirm the original driver has stopped before removing only that run's lock file. Do not start concurrent writers or clear a live lock.
 
+If the clock-create response was lost, resume recovers the exact clock already attached to this run's verified customer only after checking the clock ID, Sandbox mode, run-specific name and saved start. The saved `clockStartTime` and idempotency arguments are never rewritten. If that saved future start has become stale and no clock is attached, `sandbox_clock_start_stale` stops the run without another create attempt. Retain the evidence, clean up that fixture and start a new isolated run; do not edit the old start or reuse its key with different arguments.
+
 ```sh
 node services/bridge-platform/sandbox-e2e.cjs status /absolute/protected/config.json
 node services/bridge-platform/sandbox-e2e.cjs cleanup /absolute/protected/config.json
@@ -203,6 +205,8 @@ node services/bridge-platform/sandbox-e2e.cjs cleanup /absolute/protected/config
 Status reads the existing private manifest without loading credentials or calling Stripe. Review the private `run-state.json` and `fixture-ledger.json` as needed without publishing secret files or raw personal/provider payloads. If a pending Checkout has expired, retain that run's record and clean up; start a fresh isolated run rather than altering an old order into a paid one.
 
 Cleanup rechecks the Sandbox account, exact customer ID, fixture metadata, subject and clock binding. A test clock is deleted only when its name matches this run and its customer list contains exactly this one fixture customer. Deleting a test clock also deletes its customer/subscriptions. Non-clock cleanup expires the fixture's open Checkout and deletes only its fixture customer. The local evidence ledger remains. Cleanup refuses unrelated or shared objects instead of deleting them.
+
+`cleaned: true` additionally requires an exact provider deletion acknowledgment and fresh deletion confirmation for the customer and, when present, its clock. An inconclusive acknowledgment, remaining object, permission failure or lost response leaves cleanup incomplete. A retry can confirm a prior authorized deletion from the exact object's tombstone or a provider `404 resource_missing`; it cannot treat an arbitrary error as deletion proof.
 
 The harness creates no production member, subscription, AX balance or device license. Its fixture agreements do not approve the customer-facing draft, and its passing results cannot turn production readiness true.
 

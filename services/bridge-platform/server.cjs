@@ -9,13 +9,20 @@ async function createProductionService(env=process.env){
  if(!Array.isArray(config.ownerSubjects)||!config.ownerSubjects.length)throw Error('Verified canonical owner subjects have not been provisioned');
  // This adapter must come from the actual deployed account authority. Missing
  // authority blocks deployment; no local flag can substitute for MFA/ownership.
- privateFile(config.authorityModule);const authority=require(config.authorityModule);
- for(const method of ['resolvePrivileges','revokeBridgeSession','deleteBridgeMembership','deleteAccount','moderate','cancelSubscription','trustedIP','verifyCSRF','verifyDeploymentReadiness'])if(typeof authority[method]!=='function')throw Error('Account authority integration missing: '+method);
+ privateFile(config.authorityModule);const canonicalAuthority=require(config.authorityModule),authority=Object.create(null);
+ for(const method of ['resolvePrivileges','revokeBridgeSession','deleteBridgeMembership','deleteAccount','moderate','trustedIP','verifyCSRF','verifyDeploymentReadiness']){
+  if(typeof canonicalAuthority[method]!=='function')throw Error('Account authority integration missing: '+method);
+  authority[method]=canonicalAuthority[method].bind(canonicalAuthority);
+ }
+ // Subscription cancellation belongs to this service's verified Stripe ledger.
+ // Never accept an unrelated account-module stub as proof of stopped billing.
+ let billing=null;
+ authority.cancelSubscription=async(...args)=>{if(typeof billing?.cancelSubscription!=='function')throw Error('Verified subscription billing is unavailable');return billing.cancelSubscription(...args);};
  const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database||'redxai_accounts'});
  const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(config.legalApproved!==true||!reviewedLegal(legal,config.legalApproval)||!reviewedLegal(legal))throw Error('Published agreements and business details have not been reviewed and approved');
  const platform=createPlatform({store,authority,ownerSubjects:config.ownerSubjects,licensePrivateKey:privateFile(config.licenseKeyFile),ipHashKey:privateFile(config.ipHashKeyFile).trim(),production:true,legalVersion:legal.version,legalDocuments:legal.documents});
  if(!/^bpc_[A-Za-z0-9]+$/.test(priceCatalog.portalConfiguration||''))throw Error('An explicit mode-specific Billing Portal configuration is required');
- const billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookEndpointId:config.stripeWebhookEndpointId,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
+ billing=createStripeBilling({client:stripeClientFromEnvironment(env),platform,prices:priceCatalog.products,portalConfiguration:priceCatalog.portalConfiguration,webhookEndpointId:config.stripeWebhookEndpointId,webhookSecret:privateFile(config.stripeWebhookSecretFile).trim(),livemode:config.paymentsMode==='live',allowLive:env.BRIDGE_ENABLE_LIVE_PAYMENTS==='yes'});
  const media=new PluginMediaStore(config.mediaDirectory);
  const authenticate=createNativeAuthenticator({resolvePrivileges:authority.resolvePrivileges,trustedIP:authority.trustedIP,canonicalCookieTransport:config.canonicalCookieTransport===true});
  const readiness=createReadinessProbe({authority,store,platform,billing,legal,config,clientConfig:require('../../app/platform-config.cjs')});

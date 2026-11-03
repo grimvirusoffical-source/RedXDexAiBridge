@@ -18,15 +18,25 @@ class RedXStore {
   const u=new URL(base);if(!((u.protocol==='https:'&&!u.username&&!u.password)||(u.protocol==='http:'&&['127.0.0.1','[::1]'].includes(u.hostname)))||u.pathname!=='/'||u.search||u.hash)throw Error('Trusted RedX origin required');
   if(!/^[a-z][a-z0-9_]{0,63}$/.test(database)||typeof key!=='string'||key.length<16)throw Error('Scoped server-side RedX configuration required');
   this.base=u.origin+'/v1/db/'+database;this.key=key;this.request=request;if(!/^[A-Za-z0-9_-]{3,64}$/.test(recordKey))throw Error('Invalid state namespace');this.recordKey=recordKey;this.id=parseInt(crypto.createHash('sha256').update(this.recordKey).digest('hex').slice(0,13),16);this.productionReady=true;
+  this.recordPath='/record-cas/'+encodeURIComponent('rxa-bridge-platform.red-xai.db:Record[ID='+this.id+']');
  }
  async call(suffix,options={}){const r=await this.request(this.base+suffix,{...options,headers:{authorization:'Bearer '+this.key,accept:'application/json','content-type':'application/json'},redirect:'error',signal:AbortSignal.timeout(10000)});return r;}
- async load(){const r=await this.call('/path/'+encodeURIComponent('rxa-bridge-platform.red-xai.db:Record[ID='+this.id+'].payload'));if(r.status===404)return empty();if(!r.ok)throw Error('Account database unavailable');const body=await r.json();const payload=typeof body.value==='string'?JSON.parse(body.value):body.value;const state=typeof payload==='string'?JSON.parse(payload):payload;if(state?.key!==this.recordKey||state.schema!==1||!Number.isSafeInteger(state.revision))throw Error('Invalid platform state or RedX record collision');return state;}
+ async load(){
+  const r=await this.call(this.recordPath);if(r.headers?.get('x-redx-record-cas')!=='1')throw Error('Account database record-CAS capability unavailable');
+  if(r.status===404){if((await r.json())?.code==='record_not_found')return empty();throw Error('Account database unavailable');}if(r.status!==200||!r.ok)throw Error('Account database unavailable');
+  const body=await r.json(),record=body?.record;
+  if(!record||record.key!==this.recordKey||!Number.isSafeInteger(record.revision)||record.revision<1||typeof record.payload!=='string')throw Error('Invalid platform state or RedX record collision');
+  const state=JSON.parse(record.payload);
+  if(!state||state.key!==this.recordKey||state.schema!==1||state.revision!==record.revision)throw Error('Invalid platform state or RedX record collision');return state;
+ }
  async save(next,expected){
-  const params={id:this.id,key:this.recordKey,revision:next.revision,payload:JSON.stringify({...next,key:this.recordKey})};
-  const file='"rxa-bridge-platform.red-xai.db":Record';
-  const q=expected===0?'{Add[]} = '+file+'[ID=$id] = [ {key[]} = $key, {revision[]} = $revision, {payload[]} = $payload ]':'{Tx[]} = [ {Require[]} = '+file+'[ID=$id, key=$key, revision=$expected], Count = 1, {Set[]} = '+file+'[ID=$id].[revision = $revision, payload = $payload] ]';
-  if(expected!==0)params.expected=expected;
-  const r=await this.call('/bx',{method:'POST',body:JSON.stringify({q,params})});if(r.status===409)throw new Conflict();if(!r.ok)throw Error('Account database refused platform write');
+  if(!Number.isSafeInteger(expected)||expected<0||!next||next.schema!==1||!Number.isSafeInteger(next.revision)||next.revision!==expected+1||next.key!==undefined&&next.key!==this.recordKey)throw Error('Invalid platform state revision');
+  const record={key:this.recordKey,revision:next.revision,payload:JSON.stringify({...next,key:this.recordKey})};
+  // A query-layer transaction does not isolate other REST writers or provide
+  // native crash atomicity. Require the dedicated synchronous record-CAS API;
+  // an older server is unavailable rather than silently falling back to BoxQL.
+  const r=await this.call(this.recordPath,{method:'POST',body:JSON.stringify({expected_revision:expected,record})});if(r.headers?.get('x-redx-record-cas')!=='1')throw Error('Account database record-CAS capability unavailable');if(r.status===409)throw new Conflict();if(r.status!==200||!r.ok)throw Error('Account database refused platform write');
+  const ack=await r.json();if(ack?.ok!==true||ack.revision!==next.revision||!Number.isSafeInteger(ack.seq)||ack.seq<1)throw Error('Account database did not confirm a durable platform write');
  }
 }
 module.exports={MemoryStore,FileStore,RedXStore,Conflict,empty};

@@ -3,7 +3,6 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {DesktopLease,assertExecution}=require('../app/execution.cjs');
 const {ProcessManager}=require('../app/processes.cjs');
 const core=require('../app/core.cjs');
-const pause=ms=>new Promise(r=>setTimeout(r,ms));
 
 test('background mode blocks direct focus tools while allowing independent non-focus work',()=>{
  for(const name of ['desktop_mouse','desktop_type','desktop_key','open_application']){
@@ -39,7 +38,13 @@ test('process quotas are independently enforced and 0 removes app caps without s
   for(let i=0;i<18;i++)launch('AI-'+i);
   assert.equal([...manager.sessions.values()].filter(x=>x.running).length,20);
   assert.equal(manager.list('B').length,1);
- }finally{manager.stopAll();for(let i=0;i<50&&[...manager.sessions.values()].some(x=>x.running);i++)await pause(50)}
+ }finally{
+  const closed=[...manager.sessions.values()].filter(s=>s.running).map(s=>new Promise(resolve=>s.child.once('close',resolve)));
+  manager.stopAll();let deadline;
+  // Windows starts forced tree termination after 1.5s; twenty taskkill children
+  // can take longer than the old 2.5s polling budget on a busy test machine.
+  try{await Promise.race([Promise.all(closed),new Promise(resolve=>{deadline=setTimeout(resolve,10000);})]);}finally{clearTimeout(deadline);}
+ }
  assert.ok([...manager.sessions.values()].every(x=>!x.running));
 });
 

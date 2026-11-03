@@ -42,6 +42,26 @@ function atomicJSON(file,value){const temp=file+'.'+crypto.randomUUID()+'.tmp',f
 function privateDirectory(directory){privateLocation(directory);fs.mkdirSync(directory,{recursive:true,mode:0o700});const st=fs.lstatSync(directory);if(!st.isDirectory()||st.isSymbolicLink()||(process.platform!=='win32'&&(st.mode&0o077)))fail('private_directory_required');privateLocation(directory);}
 function lockRun(directory){const file=path.join(directory,'run.lock');let fd;try{fd=fs.openSync(file,'wx',0o600);}catch(e){if(e.code==='EEXIST')fail('sandbox_run_already_locked');throw e;}fs.writeFileSync(fd,JSON.stringify({pid:process.pid,startedUtc:new Date().toISOString()}));return()=>{fs.closeSync(fd);fs.unlinkSync(file);};}
 function assertOwnedCustomer(customer,run){if(customer?.deleted||customer?.livemode!==false||customer.id!==run.customerId||customer.metadata?.redx_e2e!==run.id||customer.metadata?.redx_subject!==run.subject)fail('sandbox_customer_ownership_mismatch');}
+function assertOwnedClock(clock,run,id=run.clockId){if(typeof id!=='string'||!/^clock_[A-Za-z0-9]+$/.test(id)||clock?.deleted||clock?.id!==id||clock.livemode!==false||clock.name!=='Bridge Sandbox '+run.id)fail('sandbox_clock_ownership_mismatch');}
+async function recoverAttachedClock(client,run,customer,save){
+ assertOwnedCustomer(customer,run);
+ if(!customer.test_clock)return false;
+ if(typeof customer.test_clock!=='string'||!/^clock_[A-Za-z0-9]+$/.test(customer.test_clock)||run.clockId&&run.clockId!==customer.test_clock)fail('sandbox_clock_ownership_mismatch');
+ const clock=await client.testHelpers.testClocks.retrieve(customer.test_clock);assertOwnedClock(clock,run,customer.test_clock);
+ if(!run.clockId){
+  if(!Number.isSafeInteger(run.clockStartTime)||!Number.isSafeInteger(clock.frozen_time)||clock.frozen_time<run.clockStartTime)fail('sandbox_clock_resume_unverifiable');
+  const customers=await client.customers.list({test_clock:clock.id,limit:100});
+  if(customers.has_more||customers.data?.length!==1||customers.data[0].id!==run.customerId)fail('sandbox_clock_has_other_customers');
+  // A lost create response must reuse the provider object, never change the
+  // persisted frozen_time under the already-used idempotency key.
+  run.clockId=clock.id;save();
+ }
+ return true;
+}
+async function deletionConfirmed(retrieve,id){
+ try{const resource=await retrieve(id);return resource?.id===id&&resource.deleted===true;}
+ catch(error){if(error?.statusCode===404&&error.code==='resource_missing')return true;throw error;}
+}
 function assertRun(run,c){if(run?.schema!==1||run.account!==ACCOUNT||run.scenario!==c.scenario||!/^[a-f0-9]{32}$/.test(run.id)||c.runId!==undefined&&run.id!==c.runId||run.webhookEndpointId!==c.webhookEndpointId||c.webhookEndpointId!==undefined&&run.webhookOrigin!==webhookOrigin(c)||run.subject!=='sandbox_e2e_'+run.id||run.sessionId!==undefined&&!/^cs_test_[A-Za-z0-9]+$/.test(run.sessionId))fail('sandbox_run_mismatch');}
 function checkoutURL(sessionId,value){let url;try{url=new URL(value);}catch{fail('sandbox_checkout_url_invalid');}if(!/^cs_test_[A-Za-z0-9]+$/.test(sessionId||'')||url.protocol!=='https:'||url.host!=='checkout.stripe.com'||url.username||url.password||url.search||url.pathname!=='/c/pay/'+sessionId||url.href.includes('cs_live_'))fail('sandbox_checkout_url_invalid');return url.href;}
 function directEndpointPath(runId){if(typeof runId!=='string'||!/^[a-f0-9]{32}$/.test(runId))fail('sandbox_run_id_invalid');return'/redxai-bridge-sandbox-e2e/'+runId+'/stripe/webhook';}
@@ -129,6 +149,20 @@ async function verifyGrant(platform,actor,run){
 function renewalStateMatches({run,expectedEnd,binding,order,me,proof}){
  return Number.isSafeInteger(expectedEnd)&&expectedEnd>run.initialPeriodEnd&&Number.isSafeInteger(proof?.receivedMs)&&proof.receivedMs>=run.renewalStartedAtMs&&proof.mode==='sandbox'&&binding?.subscriptionId===run.subscriptionId&&binding.sub===run.subject&&binding.customerId===run.customerId&&order?.sub===run.subject&&order.subscriptionId===run.subscriptionId&&order.kind==='subscription'&&order.sku==='gold'&&order.amountCents===799&&order.periodEndMs===expectedEnd*1000&&me?.sub===run.subject&&me.tier==='gold'&&Array.isArray(me.subscriptions)&&me.subscriptions.some(item=>item.providerId===run.subscriptionId&&item.tier==='gold'&&item.source==='stripe'&&item.untilMs===expectedEnd*1000);
 }
+async function advanceOwnedClock(client,run,deadline,{wait=waitUntil,now=Date.now}={}){
+ const clockDeadline=Math.min(deadline,now()+120000),read=async()=>{const current=await client.testHelpers.testClocks.retrieve(run.clockId);assertOwnedClock(current,run);return current;};
+ const initialized=await wait(async()=>{const current=await read();return current.status==='ready'?current:null;},clockDeadline);
+ if(!initialized)return false;
+ if(!Number.isSafeInteger(initialized.frozen_time)||!Number.isSafeInteger(run.renewalTarget))fail('sandbox_clock_time_invalid');
+ if(initialized.frozen_time<run.renewalTarget){
+  if(now()>=clockDeadline)return false;
+  await client.testHelpers.testClocks.advance(run.clockId,{frozen_time:run.renewalTarget},{idempotencyKey:'bridge-e2e-renewal:'+run.id});
+ }
+ // Initialization and advancement have separate ready transitions. Resume may
+ // already be at the saved target after an advance response was lost.
+ const ready=await wait(async()=>{const current=await read();return current.status==='ready'&&Number.isSafeInteger(current.frozen_time)&&current.frozen_time>=run.renewalTarget;},clockDeadline);
+ return !!ready;
+}
 async function advanceRenewal(client,run,platform,actor,deadline,save){
  const session=await client.checkout.sessions.retrieve(run.sessionId,{expand:['subscription']});const subscription=typeof session.subscription==='string'?await client.subscriptions.retrieve(session.subscription):session.subscription;
  if(session.livemode!==false||session.customer!==run.customerId||!subscription||subscription.livemode!==false||subscription.customer!==run.customerId||subscription.metadata?.redx_subject!==run.subject)fail('sandbox_subscription_binding_mismatch');
@@ -137,13 +171,15 @@ async function advanceRenewal(client,run,platform,actor,deadline,save){
  run.renewalTarget??=run.initialPeriodEnd+3600;run.renewalStartedAtMs??=Date.now();run.stage='renewal_pending';save();
  if(!run.clockId){
   const customer=await client.customers.retrieve(run.customerId);assertOwnedCustomer(customer,run);
-  run.clockStartTime??=Math.floor(Date.now()/1000)+60;if(run.clockStartTime>=run.initialPeriodEnd)fail('sandbox_initial_period_expired');save();
-  const clock=await client.testHelpers.testClocks.create({customer:run.customerId,frozen_time:run.clockStartTime,name:'Bridge Sandbox '+run.id},{idempotencyKey:'bridge-e2e-clock:'+run.id});if(clock.livemode!==false)fail('sandbox_provider_mode_mismatch');run.clockId=clock.id;save();
-  const attached=await client.customers.retrieve(run.customerId);assertOwnedCustomer(attached,run);if(attached.test_clock!==run.clockId)fail('sandbox_clock_ownership_mismatch');
+  await recoverAttachedClock(client,run,customer,save);
+  if(!run.clockId){
+   run.clockStartTime??=Math.floor(Date.now()/1000)+60;if(!Number.isSafeInteger(run.clockStartTime)||run.clockStartTime>=run.initialPeriodEnd)fail('sandbox_initial_period_expired');save();
+   if(run.clockStartTime<=Math.floor(Date.now()/1000))fail('sandbox_clock_start_stale');
+   const clock=await client.testHelpers.testClocks.create({customer:run.customerId,frozen_time:run.clockStartTime,name:'Bridge Sandbox '+run.id},{idempotencyKey:'bridge-e2e-clock:'+run.id});assertOwnedClock(clock,run,clock?.id);run.clockId=clock.id;save();
+   const attached=await client.customers.retrieve(run.customerId);assertOwnedCustomer(attached,run);if(attached.test_clock!==run.clockId)fail('sandbox_clock_ownership_mismatch');
+  }
  }
- let clock=await client.testHelpers.testClocks.retrieve(run.clockId);if(clock.id!==run.clockId||clock.livemode!==false||clock.name!=='Bridge Sandbox '+run.id)fail('sandbox_clock_ownership_mismatch');
- if(clock.status==='ready'&&clock.frozen_time<run.renewalTarget)await client.testHelpers.testClocks.advance(run.clockId,{frozen_time:run.renewalTarget},{idempotencyKey:'bridge-e2e-renewal:'+run.id});
- const ready=await waitUntil(async()=>{const current=await client.testHelpers.testClocks.retrieve(run.clockId);return current.status==='ready'&&current.frozen_time>=run.renewalTarget;},Math.min(deadline,Date.now()+120000));if(!ready)return false;
+ if(!await advanceOwnedClock(client,run,deadline))return false;
  const current=await client.subscriptions.retrieve(run.subscriptionId),expectedEnd=current.current_period_end??current.items?.data?.[0]?.current_period_end;if(current.livemode!==false||current.customer!==run.customerId||current.metadata?.redx_subject!==run.subject||current.status!=='active'||!Number.isSafeInteger(expectedEnd)||expectedEnd<=run.initialPeriodEnd)return false;
  const receipt=await waitUntil(async()=>{const state=await platform.getBillingState();for(const binding of Object.values(state.invoiceReceipts||{})){if(binding.subscriptionId!==run.subscriptionId)continue;const order=await platform.getOrder(binding.orderId),me=await platform.dispatch(actor,'/me');if(renewalStateMatches({run,expectedEnd,binding,order,me,proof:state.webhookProof}))return binding;}return null;},deadline);
  if(!receipt)return false;run.refundPaymentIntent=receipt.paymentIntent;run.evidence={...run.evidence,renewalVerified:true,renewalInvoiceId:receipt.invoiceId,renewalReceiptId:receipt.orderId};save();return true;
@@ -161,12 +197,15 @@ async function refund(client,run,platform,actor,deadline,save){
  run.evidence={...run.evidence,refundVerified:true,entitlementRevoked:true,...(run.subscriptionId?{providerCancellationVerified:true}:{})};run.stage='complete';save();return true;
 }
 async function cleanup(client,run,save){
- const customer=await client.customers.retrieve(run.customerId);
- if(customer.deleted===true&&customer.id===run.customerId&&run.cleanupAuthorized===run.customerId){run.cleaned=true;save();return publicStatus(run);}
+ if(run.cleaned){delete run.cleaned;save();}
+ let customer;try{customer=await client.customers.retrieve(run.customerId);}catch(error){if(run.cleanupAuthorized===run.customerId&&error?.statusCode===404&&error.code==='resource_missing')customer={id:run.customerId,deleted:true};else throw error;}
+ if(customer.deleted===true&&customer.id===run.customerId&&run.cleanupAuthorized===run.customerId){if(run.clockId&&!await deletionConfirmed(id=>client.testHelpers.testClocks.retrieve(id),run.clockId))fail('sandbox_cleanup_unconfirmed');run.cleaned=true;save();return publicStatus(run);}
  assertOwnedCustomer(customer,run);
+ if(customer.test_clock&&!run.clockId)await recoverAttachedClock(client,run,customer,save);
  run.cleanupAuthorized=run.customerId;save();
- if(run.clockId){if(customer.test_clock!==run.clockId)fail('sandbox_clock_ownership_mismatch');const clock=await client.testHelpers.testClocks.retrieve(run.clockId);if(clock.id!==run.clockId||clock.livemode!==false||clock.name!=='Bridge Sandbox '+run.id)fail('sandbox_clock_ownership_mismatch');const customers=await client.customers.list({test_clock:run.clockId,limit:100});if(customers.has_more||customers.data?.length!==1||customers.data[0].id!==run.customerId)fail('sandbox_clock_has_other_customers');await client.testHelpers.testClocks.del(run.clockId);}
- else{if(run.sessionId){const session=await client.checkout.sessions.retrieve(run.sessionId);if(session.livemode!==false||session.customer!==run.customerId)fail('sandbox_session_ownership_mismatch');if(session.status==='open')await client.checkout.sessions.expire(run.sessionId);}await client.customers.del(run.customerId);}
+ if(run.clockId){if(customer.test_clock!==run.clockId)fail('sandbox_clock_ownership_mismatch');const clock=await client.testHelpers.testClocks.retrieve(run.clockId);assertOwnedClock(clock,run);const customers=await client.customers.list({test_clock:run.clockId,limit:100});if(customers.has_more||customers.data?.length!==1||customers.data[0].id!==run.customerId)fail('sandbox_clock_has_other_customers');const deleted=await client.testHelpers.testClocks.del(run.clockId);if(deleted?.id!==run.clockId||deleted.deleted!==true||!await deletionConfirmed(id=>client.testHelpers.testClocks.retrieve(id),run.clockId))fail('sandbox_cleanup_unconfirmed');}
+ else{if(run.sessionId){const session=await client.checkout.sessions.retrieve(run.sessionId);if(session.livemode!==false||session.customer!==run.customerId)fail('sandbox_session_ownership_mismatch');if(session.status==='open')await client.checkout.sessions.expire(run.sessionId);}const deleted=await client.customers.del(run.customerId);if(deleted?.id!==run.customerId||deleted.deleted!==true)fail('sandbox_cleanup_unconfirmed');}
+ if(!await deletionConfirmed(id=>client.customers.retrieve(id),run.customerId))fail('sandbox_cleanup_unconfirmed');
  run.cleaned=true;save();return publicStatus(run);
 }
 async function execute(command,c,{client,secret,output=value=>console.log(JSON.stringify(value))}={}){
@@ -181,7 +220,7 @@ async function execute(command,c,{client,secret,output=value=>console.log(JSON.s
  try{
   let run;if(fs.existsSync(file))run=JSON.parse(privateRead(file));else{const id=c.runId??crypto.randomBytes(16).toString('hex');run={schema:1,id,subject:'sandbox_e2e_'+id,account:ACCOUNT,scenario:c.scenario,stage:'created',...(c.webhookEndpointId?{webhookEndpointId:c.webhookEndpointId,webhookOrigin:webhookOrigin(c)}:{})};}
   assertRun(run,c);const save=()=>atomicJSON(file,run);save();
-  if(command==='cleanup'){if(run.cleaned)return publicStatus(run);return cleanup(client,run,save);}
+  if(command==='cleanup')return cleanup(client,run,save);
   if(run.cleaned)fail('sandbox_run_already_cleaned');if(run.stage==='complete')return publicStatus(run);
   const {platform,actor}=await openFixture(c,run);save();
   const billing=createStripeBilling({client,platform,webhookSecret:secret,webhookEndpointId:c.webhookEndpointId,livemode:false,prices:catalog.products,portalConfiguration:catalog.portalConfiguration});
@@ -197,4 +236,4 @@ async function execute(command,c,{client,secret,output=value=>console.log(JSON.s
  }finally{if(server)await new Promise(resolve=>server.close(resolve));unlock();}
 }
 if(require.main===module){Promise.resolve().then(()=>execute(process.argv[2],readConfig(process.argv[3]))).then(result=>{console.log(JSON.stringify(result));if(!['complete'].includes(result.stage)&&process.argv[2]==='run')process.exitCode=2;}).catch(error=>{console.error(JSON.stringify({error:safeError(error),livemode:false,productionReady:false}));process.exitCode=1;});}
-module.exports={ACCOUNT,HOOK,PINNED_API_VERSION,REQUIRED_EVENTS,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,directEndpointURL,webhookOrigin,webhookPath,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute};
+module.exports={ACCOUNT,HOOK,PINNED_API_VERSION,REQUIRED_EVENTS,configShape,readConfig,privateLocation,privateDirectory,checkoutURL,directEndpointURL,webhookOrigin,webhookPath,renewalStateMatches,prepare,assertOwnedCustomer,assertRun,recoverAttachedClock,advanceOwnedClock,advanceRenewal,cleanup,preflight,clientAndSecret,webhookServer,publicStatus,safeError,execute};

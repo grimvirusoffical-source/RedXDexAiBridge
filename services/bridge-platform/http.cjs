@@ -1,7 +1,17 @@
 'use strict';
 const crypto=require('node:crypto');
 const {PlatformError}=require('./index.cjs');
+const {CHECKS,validLegalVersion}=require('./readiness.cjs');
 const DEVICELESS=new Set(['/catalog','/me','/device/challenge','/device/enroll','/account/join']);
+const PURCHASES=new Set(['/checkout/quote','/checkout/create','/purchase/credits']);
+const DEVICE_PROOF_HEADERS=['x-bridge-device','x-bridge-time','x-bridge-nonce','x-bridge-signature'];
+const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value));
+const ownValue=(value,key)=>{const descriptor=Object.getOwnPropertyDescriptor(value,key);return descriptor&&Object.hasOwn(descriptor,'value')?descriptor.value:undefined;};
+function purchaseReady(value,legalVersion){
+ if(!plain(value)||!validLegalVersion(legalVersion))return false;
+ for(const [key,expected]of Object.entries({ready:true,app:'bridge',issuer:'https://red-xai.com',billingMode:'live',legalVersion}))if(ownValue(value,key)!==expected)return false;
+ const checks=ownValue(value,'checks');return plain(checks)&&CHECKS.every(key=>ownValue(checks,key)===true);
+}
 const CANONICAL_ME='https://red-xai.com/api/accounts/me',COOKIE_TOKEN=/^[A-Za-z0-9_~.+/-]{12,1024}={0,2}$/;
 const canonicalSubject=value=>typeof value==='string'&&value.length>0&&value.length<=200&&!/[\s\p{Cc}]/u.test(value)&&!(value in Object.prototype);
 function expectedCookieSubject(encoded){
@@ -16,6 +26,10 @@ async function canonicalJSON(response){
 function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,rawWebhook=null,readiness=null,prefix='/redxai-bridge/api',publicOrigin='https://red-xai.com'}={}){
  if(!platform||typeof authenticate!=='function')throw Error('Trusted authentication adapter required');
  const budgets=new Map();
+ async function purchasesAvailable(){
+  if(typeof readiness!=='function')return false;let timer;
+  try{const value=await Promise.race([Promise.resolve().then(()=>readiness()),new Promise(resolve=>{timer=setTimeout(()=>resolve(null),3000);})]);return purchaseReady(value,platform.legalVersion);}catch{return false;}finally{clearTimeout(timer);}
+ }
  return async(req,res)=>{
   const send=(status,data)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','content-security-policy':"default-src 'none'; frame-ancestors 'none'"});res.end(JSON.stringify(data));};
   try{
@@ -35,7 +49,10 @@ function createHandler({platform,authenticate,verifyCSRF=null,extraRoutes=null,r
     if(req.headers.origin||req.headers.cookie){if(typeof verifyCSRF!=='function'||!(await verifyCSRF(req,actor)))return send(403,{error:'csrf_required'});}
    }
    const raw=Buffer.concat(chunks),body=raw.length?JSON.parse(raw.toString('utf8')):{};if(!body||typeof body!=='object'||Array.isArray(body))return send(400,{error:'invalid_json'});
-   if(!DEVICELESS.has(route))actor=await platform.verifyDeviceProof(actor,{method:req.method,path:u.pathname+u.search,bodyHash:crypto.createHash('sha256').update(raw).digest('hex'),deviceId:req.headers['x-bridge-device'],timeMs:Number(req.headers['x-bridge-time']),nonce:req.headers['x-bridge-nonce'],signature:req.headers['x-bridge-signature']});
+   const suppliedMeProof=route==='/me'&&DEVICE_PROOF_HEADERS.some(key=>Object.hasOwn(req.headers,key));
+   if(suppliedMeProof&&!DEVICE_PROOF_HEADERS.every(key=>typeof req.headers[key]==='string'&&req.headers[key].length>0))return send(403,{error:'device_proof_required'});
+   if(!DEVICELESS.has(route)||suppliedMeProof)actor=await platform.verifyDeviceProof(actor,{method:req.method,path:u.pathname+u.search,bodyHash:crypto.createHash('sha256').update(raw).digest('hex'),deviceId:req.headers['x-bridge-device'],timeMs:Number(req.headers['x-bridge-time']),nonce:req.headers['x-bridge-nonce'],signature:req.headers['x-bridge-signature']});
+   if(PURCHASES.has(route)&&!(await purchasesAvailable()))return send(503,{error:'purchases_unavailable'});
    const query=Object.fromEntries(u.searchParams);if(extraRoutes){const extra=await extraRoutes({req,res,route,actor,body,query});if(extra!==undefined)return res.writableEnded?undefined:send(200,extra);}
    send(200,await platform.dispatch(actor,route,body,query));
   }catch(e){if(e instanceof SyntaxError)return send(400,{error:'invalid_json'});if(e instanceof PlatformError)return send(e.status,{error:e.code,...e.details});send(503,{error:'platform_unavailable'});}

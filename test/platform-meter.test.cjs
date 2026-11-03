@@ -2,6 +2,62 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),{EventEmitter}=require('node:events');
 const {PlatformMeter,POLLING,trackBackgroundWork}=require('../app/platform-meter.cjs');
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+const profile=()=>({sub:'person',deviceId:'a'.repeat(64),accepted:true,limits:{weeklyMinutes:120},usage:{activeMs:1000}});
+async function backendFixture(){
+ const crypto=require('node:crypto'),{createPlatform,monday}=require('../services/bridge-platform/index.cjs'),{MemoryStore}=require('../services/bridge-platform/store.cjs');
+ const clock=new Clock();clock.time=Date.UTC(2026,10,2);const store=new MemoryStore(),api=createPlatform({store,ownerSubjects:['owner'],ipHashKey:'fixture-meter-hash-key-at-least-32-characters',now:clock.now,legalDocuments:['terms','privacy','agreement'].map(id=>({id,title:id,content:'Meter test fixture.'}))});
+ const initial={verified:true,sub:'person'},keys=crypto.generateKeyPairSync('ed25519'),publicKey=keys.publicKey.export({format:'pem',type:'spki'}).toString(),challenge=await api.dispatch(initial,'/device/challenge');
+ const enrollment=await api.dispatch(initial,'/device/enroll',{nonce:challenge.nonce,publicKey,signature:crypto.sign(null,Buffer.from('bridge-enroll:'+challenge.nonce),keys.privateKey).toString('base64url'),label:'Meter fixture'});
+ const actor={...initial,deviceId:enrollment.deviceId,deviceVerified:true},read=await api.dispatch(actor,'/legal/read',{version:api.legalVersion});await api.dispatch(actor,'/legal/accept',{grant:read.grant,read:true,agree:true});
+ const calls=[],client={call:async(route,body)=>{calls.push({route,body});return api.dispatch(actor,route,body);},status:async()=>({...await api.dispatch(actor,'/me'),deviceId:actor.deviceId})};
+ const meter=new PlatformMeter({client,now:clock.now,setTimer:clock.setTimer,clearTimer:clock.clearTimer,stopWork:()=>{}});
+ const exhaust=()=>{store.value.members.person.usage={weekStartMs:monday(clock.now()),activeMs:120*60000,terminalMs:0,crawlerPages:0};};
+ return{clock,store,api,actor,meter,calls,exhaust};
+}
+test('a verified paid subscription restores exhausted Free work without restart and still requires a new server lease',async()=>{
+ const f=await backendFixture();f.exhaust();await assert.rejects(f.meter.begin('process_start'),error=>error.code==='weekly_time_limit');assert.ok(f.meter.failed);
+ const order=await f.api.dispatch(f.actor,'/checkout/quote',{kind:'subscription',tier:'gold'});
+ await f.api.applyPayment({verified:true,paid:true,eventId:'evt_meter_paid',checkoutSessionId:'cs_meter_paid',orderId:order.id,sub:f.actor.sub,deviceId:f.actor.deviceId,amountCents:799,currency:'usd',subscriptionId:'sub_meter_fixture',periodEndMs:f.clock.now()+30*86400000});
+ await f.meter.recover();assert.equal(f.meter.tasks.size,0);assert.equal(f.meter.lease,null);assert.equal(f.calls.filter(call=>call.route==='/usage/start').length,1);
+ const finish=await f.meter.begin('run_command');assert.equal(f.calls.filter(call=>call.route==='/usage/start').length,2);await f.clock.tick(1000);await finish();assert.equal((await f.api.dispatch(f.actor,'/me')).usage.activeMs,120*60000+1000);
+});
+test('weekly recovery uses the current server reset rather than local failure age or a cached profile',async()=>{
+ const f=await backendFixture();f.exhaust();await assert.rejects(f.meter.begin('crawl_start'));await assert.rejects(f.meter.recover(),error=>error.code==='weekly_time_limit');assert.ok(f.meter.failed);
+ await f.clock.tick(7*86400000);await f.meter.recover();assert.equal((await f.api.dispatch(f.actor,'/me')).usage.activeMs,0);const finish=await f.meter.begin('read_text_file');await f.clock.tick(750);await finish();assert.equal((await f.api.dispatch(f.actor,'/me')).usage.activeMs,750);
+});
+test('recovery requires fresh authenticated accepted allowance, coalesces requests and never resumes old work',async()=>{
+ const f=fixture(),pending=deferred();let reads=0;f.meter.client.status=async()=>{reads++;return pending.promise;};f.meter.fail(Error('Previous allowance failure'));
+ const first=f.meter.recover(),second=f.meter.recover();assert.equal(first,second);await flush();assert.equal(reads,1);assert.ok(f.meter.failed);assert.equal(f.calls.length,0);
+ pending.resolve(profile());assert.deepEqual(await first,{recovered:true});assert.equal(f.meter.failed,null);assert.equal(f.meter.tasks.size,0);assert.equal(f.meter.lease,null);assert.equal(f.calls.length,0);
+ const finish=await f.meter.begin('process_start');assert.equal(f.calls[0].route,'/usage/start');await finish();assert.equal(reads,1);
+});
+test('unaccepted, exhausted, malformed or failed profile checks cannot clear a cached meter failure',async()=>{
+ const changes=[value=>({...value,accepted:false}),value=>({...value,sub:'constructor'}),value=>({...value,deviceId:'other-device'}),value=>({...value,limits:{weeklyMinutes:NaN}}),value=>({...value,usage:{activeMs:-1}}),value=>({...value,usage:{activeMs:120*60000}})];
+ for(const change of changes){const f=fixture(),original=Error('Original failure');f.meter.client.status=async()=>change(profile());f.meter.fail(original);await assert.rejects(f.meter.recover());assert.equal(f.meter.failed,original);assert.equal(f.calls.length,0);}
+ const f=fixture(),original=Error('Original failure');f.meter.client.status=async()=>{throw Error('Offline');};f.meter.fail(original);await assert.rejects(f.meter.recover(),/Offline/);assert.equal(f.meter.failed,original);
+});
+test('late recovery cannot undo an explicit disconnect and healthy refresh never interrupts active work',async()=>{
+ const f=fixture(),pending=deferred();f.meter.client.status=()=>pending.promise;f.meter.fail(Error('Quota failure'));const recovery=f.meter.recover();await flush();const stop=f.meter.stop();pending.resolve(profile());await assert.rejects(recovery,/cancelled/);await stop;assert.ok(f.meter.failed);assert.equal(f.meter.tasks.size,0);assert.equal(f.calls.length,0);
+ const healthy=fixture(),end=await healthy.meter.begin('read_text_file'),lease=healthy.meter.lease;healthy.meter.client.status=async()=>{throw Error('Healthy recovery must not fetch');};assert.deepEqual(await healthy.meter.recover(),{recovered:false});assert.equal(healthy.meter.lease,lease);assert.equal(healthy.meter.tasks.size,1);await end();
+});
+test('failed stop acknowledgement retains settlement evidence until an authoritative retry succeeds',async()=>{
+ const f=fixture(),original=f.meter.client.call.bind(f.meter.client);let stops=0;f.meter.client.call=async(route,body)=>{if(route==='/usage/stop'&&++stops===1)return{};return original(route,body);};f.meter.client.status=async()=>profile();
+ const finish=await f.meter.begin('process_start');await f.clock.tick(1000);await assert.rejects(finish(),/settlement/);assert.ok(f.meter.failed);assert.ok(f.meter.settlementLease);assert.equal(f.meter.lease,null);
+ await f.meter.recover();assert.equal(stops,2);assert.equal(f.chargedMs,1000);assert.equal(f.meter.failed,null);assert.equal(f.meter.settlementLease,null);assert.equal(f.calls.filter(call=>call.route==='/usage/start').length,1);
+});
+test('explicit stop settles a failed heartbeat without silently clearing its failure',async()=>{
+ const f=fixture();await f.meter.begin('process_start');f.heartbeatFails();await f.clock.tick(5000);assert.ok(f.meter.settlementLease);await f.clock.tick(1000);await f.meter.stop();assert.equal(f.chargedMs,6000);assert.ok(f.meter.failed);assert.equal(f.meter.settlementLease,null);
+ f.meter.client.status=async()=>profile();await f.meter.recover();assert.equal(f.meter.failed,null);
+});
+test('a late acknowledged heartbeat is kept only for exact-sequence settlement after local expiry',async()=>{
+ const f=fixture();await f.meter.begin('process_start');const held=f.holdHeartbeat();await f.clock.tick(5000);await f.clock.tick(10000);assert.ok(f.meter.failed);assert.equal(f.meter.lease,null);assert.equal(f.meter.tasks.size,0);
+ held.resolve();await flush();assert.equal(f.meter.settlementLease.sequence,1);assert.equal(f.meter.lease,null);await f.meter.stop();assert.equal(f.calls.at(-1).route,'/usage/stop');assert.equal(f.calls.at(-1).body.sequence,2);assert.equal(f.chargedMs,15000);assert.ok(f.meter.failed);assert.equal(f.calls.filter(call=>call.route==='/usage/start').length,1);
+ f.meter.client.status=async()=>({...profile(),usage:{activeMs:f.chargedMs}});await f.meter.recover();assert.equal(f.meter.lease,null);assert.equal(f.meter.tasks.size,0);
+});
+test('meter notifications contain signals only and observer failures cannot change accounting',async()=>{
+ const signals=[],f=fixture({onChange:value=>{signals.push(value);throw Error('Observer unavailable');}}),end=await f.meter.begin('process_start');await f.clock.tick(5000);await end();await f.meter.stop();
+ assert.deepEqual(signals.map(value=>value.reason),['start','heartbeat','settled','stop']);for(const value of signals)assert.deepEqual(Object.keys(value),['reason']);assert.equal(f.chargedMs,5000);assert.equal(f.meter.failed,null);
+});
 function deferred(){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};}
 class Clock {
  constructor(){this.time=1000;this.timers=new Map();this.next=0;}
@@ -10,7 +66,7 @@ class Clock {
  clearTimer=key=>this.timers.delete(key);
  async tick(ms){const end=this.time+ms;while(true){const due=[...this.timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at||a[0]-b[0])[0];if(!due)break;this.time=due[1].at;this.timers.delete(due[0]);due[1].fn();await flush();}this.time=end;await flush();}
 }
-function fixture({leaseMs=15000}={}){
+function fixture({leaseMs=15000,onChange=()=>{}}={}){
  const clock=new Clock(),calls=[];let stopped=0,session=null,chargedMs=0,heartbeats=0,hold=null,heartbeatError=null,crawlerError=null;
  const client={async call(route,body){
   calls.push({route,body:{...body},at:clock.time});
@@ -28,7 +84,7 @@ function fixture({leaseMs=15000}={}){
   if(hold){const d=hold;hold=null;await d.promise;return result;}
   return result;
  }};
- const meter=new PlatformMeter({client,stopWork:()=>{stopped++;},now:clock.now,setTimer:clock.setTimer,clearTimer:clock.clearTimer});
+ const meter=new PlatformMeter({client,stopWork:()=>{stopped++;},onChange,now:clock.now,setTimer:clock.setTimer,clearTimer:clock.clearTimer});
  return{clock,calls,meter,get stopped(){return stopped;},get chargedMs(){return chargedMs;},get heartbeats(){return heartbeats;},holdHeartbeat(){hold=deferred();return hold;},heartbeatFails(error=Error('network unavailable')){heartbeatError=error;},crawlerFails(error){crawlerError=error;}};
 }
 test('many concurrent AIs are charged the union of active time, not one clock per task',async()=>{

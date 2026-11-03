@@ -86,7 +86,45 @@ test('canonical owner accounts cannot create a charge or spend AX after an MFA d
 test('provider reconciliation is serialized durably, and an expired worker cannot overwrite a newer result',async()=>{
  const f=await fixture({kind:'plugin'}),s=await f.create();s.payment_status='paid';await f.billing.event(f.event('checkout.session.completed',{id:s.id}));const d={id:'dp_race',livemode:false,currency:'usd',payment_intent:s.payment_intent,charge:copy(f.intents.get(s.payment_intent).latest_charge),amount:399,status:'lost'};f.disputes.set(d.id,d);
  let release,entered;const paused=new Promise(resolve=>{release=resolve;}),ready=new Promise(resolve=>{entered=resolve;}),retrieve=f.client.disputes.retrieve;let first=true;f.client.disputes.retrieve=async id=>{const current=await retrieve(id);if(first){first=false;entered();await paused;}return current;};
- const old=f.billing.event(f.event('charge.dispute.closed',{id:d.id},'evt_old_worker'));await ready;await assert.rejects(f.billing.event(f.event('charge.dispute.closed',{id:d.id})),code('payment_processing_busy'));f.tick(300001);d.status='won';await f.billing.event(f.event('charge.dispute.closed',{id:d.id},'evt_new_worker'));release();await assert.rejects(old,code('payment_processing_fence_expired'));assert.ok((await f.platform.dispatch(f.actor,'/plugins/license',{pluginId:'workflow-checkpoints'})).token);assert.equal((await f.store.load()).billing.processing,undefined);
+ const independent=createStripeBilling({client:f.client,platform:f.platform,allowInlinePricesForTests:true,now:f.now});
+ const old=f.billing.event(f.event('charge.dispute.closed',{id:d.id},'evt_old_worker'));await ready;await assert.rejects(independent.event(f.event('charge.dispute.closed',{id:d.id})),code('payment_processing_busy'));f.tick(300001);d.status='won';await independent.event(f.event('charge.dispute.closed',{id:d.id},'evt_new_worker'));release();await assert.rejects(old,code('payment_processing_fence_expired'));assert.ok((await f.platform.dispatch(f.actor,'/plugins/license',{pluginId:'workflow-checkpoints'})).token);assert.equal((await f.store.load()).billing.processing,undefined);
+});
+
+const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
+const flush=async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
+async function pausedInitialInvoice(){
+ const f=await fixture({kind:'subscription',fixedCatalog:true}),session=await f.create(),entered=deferred(),release=deferred();session.payment_status='paid';
+ f.addInvoice('in_initial_fifo',{reason:'subscription_create',piId:session.payment_intent,periodEndMs:f.subscriptions.get(session.subscription).current_period_end*1000});
+ const retrieve=f.client.subscriptions.retrieve;let first=true,checkoutReads=0;f.client.subscriptions.retrieve=async id=>{const value=await retrieve(id);if(first){first=false;entered.resolve();await release.promise;}return value;};
+ const readCheckout=f.client.checkout.sessions.retrieve;f.client.checkout.sessions.retrieve=async(...args)=>{checkoutReads++;return readCheckout(...args);};
+ const invoice=f.webhook(f.event('invoice.paid',{id:'in_initial_fifo'}));await entered.promise;return{...f,session,invoice,release,get checkoutReads(){return checkoutReads;}};
+}
+test('concurrent signed invoice-before-Checkout delivery queues Checkout and duplicates fulfill once',async()=>{
+ const f=await pausedInitialInvoice(),paid=f.event('checkout.session.completed',{id:f.session.id},'evt_fifo_checkout'),checkout=f.webhook(paid),retry=f.webhook(paid);await flush();assert.equal(f.checkoutReads,0);assert.equal((await f.platform.getOrder(f.order.id)).fulfilled,false);
+ f.release.resolve();const [invoice,first,duplicate]=await Promise.all([f.invoice,checkout,retry]);assert.equal(invoice.status,503);assert.equal(invoice.body.error,'subscription_binding_missing');assert.equal(first.status,200);assert.equal(first.body.fulfilled,true);assert.equal(duplicate.status,200);assert.equal(duplicate.body.duplicate,true);
+ const me=await f.platform.dispatch(f.actor,'/me'),state=await f.store.load();assert.equal(me.tier,'gold');assert.equal(me.subscriptions.length,1);assert.equal(state.orders[f.order.id].fulfilled,true);assert.equal(state.billing.subscriptions[f.session.subscription].sub,f.actor.sub);assert.equal(state.billing.processing,undefined);assert.equal(state.billing.webhookProof.mode,'sandbox');assert.equal(Object.values(state.payments).filter(p=>p.checkoutSessionId===f.session.id).length,1);
+ // This is a local signed-provider fixture regression, never live receipt evidence.
+});
+test('queued reconciliation expires before executing any stale Checkout work',async()=>{
+ const f=await pausedInitialInvoice(),checkout=f.billing.event(f.event('checkout.session.completed',{id:f.session.id})),rejected=assert.rejects(checkout,code('payment_processing_busy'));await flush();f.tick(25001);f.release.resolve();assert.equal((await f.invoice).body.error,'subscription_binding_missing');await rejected;assert.equal(f.checkoutReads,0);assert.equal((await f.platform.getOrder(f.order.id)).fulfilled,false);assert.equal((await f.platform.getBillingState()).processing,undefined);
+});
+test('provider FIFO capacity is bounded and cancellation frees queued slots without processing them',async()=>{
+ const f=await pausedInitialInvoice(),controller=new AbortController(),queued=Array.from({length:63},()=>f.billing.event(f.event('checkout.session.completed',{id:f.session.id}),{signal:controller.signal})),settled=Promise.allSettled(queued);
+ await assert.rejects(f.billing.event(f.event('checkout.session.completed',{id:f.session.id})),code('payment_processing_busy'));controller.abort();const outcomes=await settled;assert.equal(outcomes.length,63);assert.equal(outcomes.every(v=>v.status==='rejected'&&v.reason.code==='payment_processing_cancelled'),true);const next=f.billing.event(f.event('customer.created',{id:'cus_fixture'}));f.release.resolve();await f.invoice;assert.equal((await next).ignored,true);assert.equal(f.checkoutReads,0);
+});
+test('a disconnected webhook response cancels its queued Checkout without changing entitlements',async()=>{
+ const f=await pausedInitialInvoice(),payload=Buffer.from(JSON.stringify(f.event('checkout.session.completed',{id:f.session.id}))),req=Readable.from([payload]),res=new(require('node:events').EventEmitter)();req.headers={'stripe-signature':f.signature(payload)};let responses=0;res.writeHead=()=>{responses++;};res.end=()=>{res.writableEnded=true;};
+ const task=f.billing.rawWebhook(req,res);await new Promise(resolve=>setImmediate(resolve));res.destroyed=true;res.emit('close');await task;assert.equal(res.listenerCount('close'),0);assert.equal(responses,0);f.release.resolve();await f.invoice;assert.equal(f.checkoutReads,0);assert.equal((await f.platform.getOrder(f.order.id)).fulfilled,false);assert.equal((await f.platform.getBillingState()).webhookProof,undefined);
+});
+test('cancellation during durable lock acquisition cannot execute a queued job or retain a fence',async()=>{
+ const f=await fixture(),session=await f.create(),gate=deferred(),entered=deferred(),controller=new AbortController(),original=f.platform.withBillingState;let reads=0;
+ f.client.checkout.sessions.retrieve=async()=>{reads++;return copy(session);};f.platform.withBillingState=async fn=>{entered.resolve();await gate.promise;return original(fn);};
+ const task=f.billing.event(f.event('checkout.session.completed',{id:session.id}),{signal:controller.signal}),rejected=assert.rejects(task,code('payment_processing_cancelled'));await entered.promise;controller.abort();gate.resolve();await rejected;assert.equal(reads,0);assert.equal((await f.platform.getBillingState()).processing,undefined);
+});
+test('nested provider work is reentrant while callbacks from a completed fence cannot reenter',async()=>{
+ const f=await fixture(),session=await f.create(),late=deferred();session.payment_status='paid';const retrieve=f.client.checkout.sessions.retrieve;let stale;
+ f.client.checkout.sessions.retrieve=async id=>{assert.equal((await f.billing.event(f.event('customer.created',{id:'cus_fixture'}))).ignored,true);stale=late.promise.then(()=>f.billing.event(f.event('customer.created',{id:'cus_fixture'})));return retrieve(id);};
+ await f.billing.event(f.event('checkout.session.completed',{id:session.id}));const refused=assert.rejects(stale,code('payment_processing_fence_expired'));late.resolve();await refused;assert.equal((await f.platform.dispatch(f.actor,'/me')).creditsCents,501);assert.equal((await f.platform.getBillingState()).processing,undefined);
 });
 
 test('a retried notification reconciles newer provider state rather than freezing its first snapshot',async()=>{
