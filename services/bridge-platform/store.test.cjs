@@ -3,17 +3,36 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {RedXStore,Conflict,empty}=require('./store.cjs');
 const key='scoped-fixture-credential-only';
 const response=(status,body,capable=true)=>({status,ok:status>=200&&status<300,headers:new Headers(capable?{'x-redx-record-cas':'1'}:{}),json:async()=>structuredClone(body)});
-const fixture=(request)=>new RedXStore({base:'http://127.0.0.1:17790',key,request});
+const fixture=(request,database='bridge_platform_v1')=>new RedXStore({base:'http://127.0.0.1:17790',key,database,request});
+
+test('RedX requires an explicit reserved Bridge namespace before any request',()=>{
+ let requests=0;const request=async()=>{requests++;throw Error('Unexpected request');};
+ for(const database of [undefined,null,'','redx_accounts','redxai_accounts','default','bridge','bridge_platform_','bridge_platform_live-1','bridge_platform_v1\n','bridge_platform_'+ 'a'.repeat(49),{},['bridge_platform_v1'],
+  't123456789_bridge_platform_v1','t12345678901_bridge_platform_v1','t123456789g_bridge_platform_v1','tABCDEF1234_bridge_platform_v1',
+  't0123456789_redx_accounts','t0123456789_redxai_accounts','t0123456789_default','t0123456789_t0123456789_bridge_platform_v1',
+  't0123456789_bridge_platform_'+ 'a'.repeat(35),
+ ]){
+  assert.throws(()=>new RedXStore({base:'http://127.0.0.1:17790',key,database,request}),/explicit isolated Bridge database/);
+ }
+ for(const database of ['bridge_platform','bridge_platform_v1','bridge_platform_sandbox_v1','t0123456789_bridge_platform_v1','tabcdef1234_bridge_platform_'+ 'a'.repeat(34)])assert.equal(new RedXStore({base:'http://127.0.0.1:17790',key,database,request}).base,'http://127.0.0.1:17790/v1/db/'+database);
+ assert.equal(requests,0);
+});
+
+test('RedX uses the exact provisioned native tenant database name without deriving or replacing its prefix',async()=>{
+ const database='tabcdef1234_bridge_platform_v1',calls=[];
+ const store=fixture(async(url,options)=>{calls.push({url,options});assert.equal(new URL(url).pathname.split('/')[3],database);return response(404,{code:'record_not_found'});},database);
+ assert.deepEqual(await store.load(),empty());assert.equal(calls.length,1);assert.equal(calls[0].options.headers.authorization,'Bearer '+key);
+});
 
 test('RedX preserves the typed persisted envelope across initial insert and update',async()=>{
  let persisted=null,sequence=0;const calls=[];
  const store=fixture(async(url,options)=>{
   calls.push({url,options});
-  assert.match(decodeURIComponent(new URL(url).pathname),/^\/v1\/db\/redxai_accounts\/record-cas\/rxa-bridge-platform\.red-xai\.db:Record\[ID=\d+\]$/);
+  assert.match(decodeURIComponent(new URL(url).pathname),/^\/v1\/db\/bridge_platform_v1\/record-cas\/rxa-bridge-platform\.red-xai\.db:Record\[ID=\d+\]$/);
   if(options.method!=='POST')return persisted?response(200,{record:persisted}):response(404,{code:'record_not_found'});
   const body=JSON.parse(options.body);
   if(body.expected_revision!==(persisted?.revision??0))return response(409,{code:'record_conflict'});
-  persisted=body.record;return response(200,{ok:true,revision:persisted.revision,seq:++sequence});
+  persisted=body.record;sequence++;return response(200,{ok:true,revision:persisted.revision,seq:sequence,local_seq:sequence,sequence_scope:'native-file'});
  });
  const initial=await store.load();assert.deepEqual(initial,empty());
  await store.save({...initial,revision:1,members:{alice:{tier:'gold'}}},0);
@@ -67,4 +86,17 @@ test('invalid or exhausted revision input never reaches RedX',async()=>{
   [{schema:1,revision:1,key:'different'},0],[{schema:2,revision:1},0],
  ])await assert.rejects(()=>store.save(state,expected),/Invalid platform state revision/);
  assert.equal(calls,0);
+});
+
+test('a global offset or ambiguous post-commit receipt cannot confirm native-file durability',async()=>{
+ const valid={ok:true,revision:1,seq:7,local_seq:7,sequence_scope:'native-file'};
+ for(const body of [
+  {ok:true,revision:1,seq:7},
+  {...valid,sequence_scope:'replication-log'},
+  {...valid,local_seq:0},{...valid,local_seq:'7'},
+  {...valid,local_seq:8},{...valid,seq:8},
+  {...valid,seq:Number.MAX_SAFE_INTEGER+1,local_seq:Number.MAX_SAFE_INTEGER+1},
+ ])await assert.rejects(()=>fixture(async()=>response(200,body)).save({...empty(),revision:1},0),error=>!(error instanceof Conflict)&&/did not confirm/.test(error.message));
+ await fixture(async()=>response(200,valid)).save({...empty(),revision:1},0);
+ await assert.rejects(()=>fixture(async()=>response(503,{error:'commit result unavailable'})).save({...empty(),revision:1},0),error=>!(error instanceof Conflict));
 });
