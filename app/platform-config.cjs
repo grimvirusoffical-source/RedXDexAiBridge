@@ -1,4 +1,5 @@
 'use strict';
-// Enable only after the account authority, RedX store, signing and payment
-// webhook deployment pass readiness checks. No keys belong in this file.
-module.exports=Object.freeze({required:false,canonicalCookieTransport:false,legalVersion:'bridge-2026-11-v1'});
+// The owner approved shipping the desktop update while the shop is inactive.
+// Activation ships in a normal update after production integration is verified.
+// No payment, account-authority or server credential belongs in this file.
+module.exports=Object.freeze({releaseProfile:'desktop-preview',shopEnabled:false,required:false,canonicalCookieTransport:false,legalVersion:'bridge-2026-11-v1'});

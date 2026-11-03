@@ -24,5 +24,7 @@ app.whenReady().then(async()=>{
  await new Promise(r=>setTimeout(r,300));
  const manual=await win.webContents.executeJavaScript('({twoFactor:!document.getElementById("twofactor-form").hidden,status:document.getElementById("status").textContent})');
  console.log(JSON.stringify({quick,manual,calls,errors},null,2));
- app.exit(quick.pending&&manual.twoFactor&&calls.includes('account:quick:start')&&calls.includes('account:manual:login')&&!errors.length?0:1);
+ const passed=quick.pending&&manual.twoFactor&&calls.includes('account:quick:start')&&calls.includes('account:manual:login')&&!errors.length;
+ if(passed)await require('./run-desktop-preview-smoke.cjs').runDesktopPreviewSmoke();
+ app.exit(passed?0:1);
 }).catch(e=>{console.error(e.message);app.exit(1);});
