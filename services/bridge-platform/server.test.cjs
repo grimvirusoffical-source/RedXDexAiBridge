@@ -63,7 +63,13 @@ test('factory billing wiring does not bypass missing canonical authority or draf
 });
 
 test('production factory refuses missing, canonical or unrelated database configuration before constructing a store',async()=>{
- for(const options of [{missingDatabase:true},...[null,'','redx_accounts','redxai_accounts','default','bridge_platform_'].map(database=>({database}))]){
+ for(const options of [{missingDatabase:true},...[null,'','redx_accounts','redxai_accounts','default','bridge_platform_','t0123456789_redxai_accounts','t012345678_bridge_platform_v1'].map(database=>({database}))]){
   const f=fixture(options);try{await assert.rejects(f.create(),/explicit isolated Bridge database/);assert.equal(f.authorityLoaded(),false);assert.equal(f.store(),undefined);assert.deepEqual(f.calls,[]);}finally{f.cleanup();}
  }
+});
+
+test('production factory preserves an explicitly provisioned native tenant Bridge namespace',async()=>{
+ const database='tabcdef1234_bridge_platform_v1',f=fixture({database});try{
+  const {server}=await f.create();assert.equal(server.listening,false);assert.equal(f.store().options.database,database);assert.deepEqual(f.calls,[]);
+ }finally{f.cleanup();}
 });

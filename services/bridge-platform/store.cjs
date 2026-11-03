@@ -3,7 +3,11 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const clone=x=>structuredClone(x);
 const empty=()=>({schema:1,revision:0,members:{},plugins:{},admins:[],bans:[],payments:{},orders:{},sessions:{},nonces:{},audit:[]});
 function bridgeDatabaseName(database){
- if(typeof database!=='string'||database.length>64||database.trim()!==database||!/^bridge_platform(?:_[a-z0-9]+)*$/.test(database))throw Error('An explicit isolated Bridge database is required');
+ if(typeof database!=='string'||database.length>64||database.trim()!==database)throw Error('An explicit isolated Bridge database is required');
+ const match=/^(?:t([a-f0-9]{10})_)?(bridge_platform(?:_[a-z0-9]+)*)$/.exec(database);
+ // Native tenant provisioning prefixes the logical name with its account
+ // hash. Preserve that exact physical name; the host still enforces ownership.
+ if(!match||(match[1]!==undefined&&match[2].length>50))throw Error('An explicit isolated Bridge database is required');
  return database;
 }
 class Conflict extends Error{constructor(){super('Concurrent platform change; retry the operation');this.code='store_conflict';}}

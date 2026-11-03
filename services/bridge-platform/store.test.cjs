@@ -3,15 +3,25 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {RedXStore,Conflict,empty}=require('./store.cjs');
 const key='scoped-fixture-credential-only';
 const response=(status,body,capable=true)=>({status,ok:status>=200&&status<300,headers:new Headers(capable?{'x-redx-record-cas':'1'}:{}),json:async()=>structuredClone(body)});
-const fixture=(request)=>new RedXStore({base:'http://127.0.0.1:17790',key,database:'bridge_platform_v1',request});
+const fixture=(request,database='bridge_platform_v1')=>new RedXStore({base:'http://127.0.0.1:17790',key,database,request});
 
 test('RedX requires an explicit reserved Bridge namespace before any request',()=>{
  let requests=0;const request=async()=>{requests++;throw Error('Unexpected request');};
- for(const database of [undefined,null,'','redx_accounts','redxai_accounts','default','bridge','bridge_platform_','bridge_platform_live-1','bridge_platform_v1\n','bridge_platform_'+ 'a'.repeat(49),{},['bridge_platform_v1']]){
+ for(const database of [undefined,null,'','redx_accounts','redxai_accounts','default','bridge','bridge_platform_','bridge_platform_live-1','bridge_platform_v1\n','bridge_platform_'+ 'a'.repeat(49),{},['bridge_platform_v1'],
+  't123456789_bridge_platform_v1','t12345678901_bridge_platform_v1','t123456789g_bridge_platform_v1','tABCDEF1234_bridge_platform_v1',
+  't0123456789_redx_accounts','t0123456789_redxai_accounts','t0123456789_default','t0123456789_t0123456789_bridge_platform_v1',
+  't0123456789_bridge_platform_'+ 'a'.repeat(35),
+ ]){
   assert.throws(()=>new RedXStore({base:'http://127.0.0.1:17790',key,database,request}),/explicit isolated Bridge database/);
  }
- for(const database of ['bridge_platform','bridge_platform_v1','bridge_platform_sandbox_v1'])assert.equal(new RedXStore({base:'http://127.0.0.1:17790',key,database,request}).base,'http://127.0.0.1:17790/v1/db/'+database);
+ for(const database of ['bridge_platform','bridge_platform_v1','bridge_platform_sandbox_v1','t0123456789_bridge_platform_v1','tabcdef1234_bridge_platform_'+ 'a'.repeat(34)])assert.equal(new RedXStore({base:'http://127.0.0.1:17790',key,database,request}).base,'http://127.0.0.1:17790/v1/db/'+database);
  assert.equal(requests,0);
+});
+
+test('RedX uses the exact provisioned native tenant database name without deriving or replacing its prefix',async()=>{
+ const database='tabcdef1234_bridge_platform_v1',calls=[];
+ const store=fixture(async(url,options)=>{calls.push({url,options});assert.equal(new URL(url).pathname.split('/')[3],database);return response(404,{code:'record_not_found'});},database);
+ assert.deepEqual(await store.load(),empty());assert.equal(calls.length,1);assert.equal(calls[0].options.headers.authorization,'Bearer '+key);
 });
 
 test('RedX preserves the typed persisted envelope across initial insert and update',async()=>{
