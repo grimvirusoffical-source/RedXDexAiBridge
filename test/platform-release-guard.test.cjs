@@ -6,8 +6,17 @@ const {CHECKS,DETAILS,contentHash}=require('../services/bridge-platform/readines
 const reviewed={version:legal.version,status:'approved',requiresReview:false,documents:['terms','privacy','agreement'].map(id=>({id,content:'Reviewed fixture '+id})),businessDetails:Object.fromEntries(DETAILS.map(key=>[key,'Reviewed fixture detail']))};reviewed.review={approved:true,businessDetailsReviewed:true,version:reviewed.version,reviewedAtMs:1,contentSha256:contentHash(reviewed)};
 const ready={ready:true,app:'bridge',issuer:'https://red-xai.com',billingMode:'live',legalVersion:legal.version,checks:Object.fromEntries(CHECKS.map(key=>[key,true]))};
 const request=value=>async()=>({ok:true,json:async()=>value});
-test('preview cannot publish a stable release even if the remote service claims readiness',async()=>{
+test('an implicit unenforced platform cannot publish even if the remote service claims readiness',async()=>{
  let contacted=false;await assert.rejects(checkPlatformReadiness({local:{required:false},request:async()=>{contacted=true;return{ok:true,json:async()=>ready};}}),/preview/);assert.equal(contacted,false);
+});
+
+test('only the explicit inactive desktop profile can publish without paid-platform readiness',async()=>{
+ const preview={releaseProfile:'desktop-preview',required:false,shopEnabled:false,canonicalCookieTransport:false};let contacted=false;
+ const result=await checkPlatformReadiness({local:preview,documents:legal,request:async()=>{contacted=true;throw Error('Unexpected network');}});
+ assert.equal(result.releaseProfile,'desktop-preview');assert.equal(result.shopEnabled,false);assert.equal(contacted,false);
+ for(const override of [{required:true},{shopEnabled:true},{canonicalCookieTransport:true},{shopEnabled:undefined}])await assert.rejects(checkPlatformReadiness({local:{...preview,...override},documents:legal}),/Desktop preview/);
+ await assert.rejects(checkPlatformReadiness({local:{...preview,releaseProfile:'other'},documents:legal}),/Unsupported/);
+ await assert.rejects(checkPlatformReadiness({local:{releaseProfile:'production',required:true,shopEnabled:true},documents:legal}),/reviewed and approved/);
 });
 test('stable release requires every current production capability and rejects sandbox billing',async()=>{
  assert.equal((await checkPlatformReadiness({local:{required:true},documents:reviewed,request:request(ready)})).ready,true);

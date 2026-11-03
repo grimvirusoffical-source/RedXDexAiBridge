@@ -1,11 +1,12 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../app/main.cjs'),'utf8');
+const {createPlatformIPC}=require('../app/platform-release.cjs');
 function handlers({packaged=false,smoke=true}={}){
  const calls=[],registered={},unavailable=new Proxy({},{get(_target,key){calls.push(['forbidden',String(key)]);throw Error('Smoke touched a platform, plugin or credential path');}}),live={status:async()=>{calls.push(['status']);return{sub:'verified-user',accepted:true};},call:async route=>{calls.push(['call',route]);return route==='/catalog'?{tiers:[]}:{url:'https://billing.stripe.com/p/session/local-test'};},checkout:async data=>{calls.push(['checkout',data]);return{url:'https://checkout.stripe.com/c/pay/local-test'};}};
- const context={app:{isPackaged:packaged},process:{env:smoke?{REDXDEX_SMOKE_OUTPUT:'/isolated-fixture'}:{}},ipc:(name,fn)=>{registered[name]=fn;},accountPlatform:smoke&&!packaged?unavailable:live,refreshPlatformAccount:()=>live.status(),pluginRunner:unavailable,accountAuth:unavailable,emit:(...args)=>calls.push(['emit',...args]),shell:{openExternal:async url=>calls.push(['open',url])},URL};
- const flag=source.match(/^const CI_SMOKE=.*;$/m);assert.ok(flag);const registrations=source.split(/\r?\n/).filter(line=>/^\s*ipc\('platform:(status|request|checkout)',/.test(line));assert.equal(registrations.length,3);
- vm.runInNewContext(flag[0]+'\n'+registrations.join('\n'),context);return{registered,calls};
+ const context={app:{isPackaged:packaged},process:{env:smoke?{REDXDEX_SMOKE_OUTPUT:'/isolated-fixture'}:{}},ipc:(name,fn)=>{registered[name]=fn;},accountPlatform:smoke&&!packaged?unavailable:live,refreshPlatformAccount:()=>live.status(),pluginRunner:unavailable,accountAuth:unavailable,emit:(...args)=>calls.push(['emit',...args]),shell:{openExternal:async url=>calls.push(['open',url])},URL,createPlatformIPC,platformConfig:{releaseProfile:'production',required:true,shopEnabled:true}};
+ const flag=source.match(/^const CI_SMOKE=.*;$/m);assert.ok(flag);const start=source.indexOf('  const platformHandlers=createPlatformIPC('),end=source.indexOf('  for(const [name,handler]of Object.entries(platformHandlers))ipc(name,handler);',start);assert.ok(start>0&&end>start);
+ vm.runInNewContext(flag[0]+'\n'+source.slice(start,end)+'\nfor(const [name,handler]of Object.entries(platformHandlers))ipc(name,handler);',context);assert.equal(Object.keys(registered).length,3);return{registered,calls};
 }
 test('isolated application smoke never reaches platform clients, plugin runners, credentials or checkout',async()=>{
  const {registered,calls}=handlers();const status=await registered['platform:status']();assert.equal(status.available,false);assert.match(status.message,/isolated application smoke/);
