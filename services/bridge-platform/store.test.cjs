@@ -3,13 +3,22 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {RedXStore,Conflict,empty}=require('./store.cjs');
 const key='scoped-fixture-credential-only';
 const response=(status,body,capable=true)=>({status,ok:status>=200&&status<300,headers:new Headers(capable?{'x-redx-record-cas':'1'}:{}),json:async()=>structuredClone(body)});
-const fixture=(request)=>new RedXStore({base:'http://127.0.0.1:17790',key,request});
+const fixture=(request)=>new RedXStore({base:'http://127.0.0.1:17790',key,database:'bridge_platform_v1',request});
+
+test('RedX requires an explicit reserved Bridge namespace before any request',()=>{
+ let requests=0;const request=async()=>{requests++;throw Error('Unexpected request');};
+ for(const database of [undefined,null,'','redx_accounts','redxai_accounts','default','bridge','bridge_platform_','bridge_platform_live-1','bridge_platform_v1\n','bridge_platform_'+ 'a'.repeat(49),{},['bridge_platform_v1']]){
+  assert.throws(()=>new RedXStore({base:'http://127.0.0.1:17790',key,database,request}),/explicit isolated Bridge database/);
+ }
+ for(const database of ['bridge_platform','bridge_platform_v1','bridge_platform_sandbox_v1'])assert.equal(new RedXStore({base:'http://127.0.0.1:17790',key,database,request}).base,'http://127.0.0.1:17790/v1/db/'+database);
+ assert.equal(requests,0);
+});
 
 test('RedX preserves the typed persisted envelope across initial insert and update',async()=>{
  let persisted=null,sequence=0;const calls=[];
  const store=fixture(async(url,options)=>{
   calls.push({url,options});
-  assert.match(decodeURIComponent(new URL(url).pathname),/^\/v1\/db\/redxai_accounts\/record-cas\/rxa-bridge-platform\.red-xai\.db:Record\[ID=\d+\]$/);
+  assert.match(decodeURIComponent(new URL(url).pathname),/^\/v1\/db\/bridge_platform_v1\/record-cas\/rxa-bridge-platform\.red-xai\.db:Record\[ID=\d+\]$/);
   if(options.method!=='POST')return persisted?response(200,{record:persisted}):response(404,{code:'record_not_found'});
   const body=JSON.parse(options.body);
   if(body.expected_revision!==(persisted?.revision??0))return response(409,{code:'record_conflict'});

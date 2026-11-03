@@ -1,11 +1,11 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
-const {createPlatform}=require('./index.cjs'),{RedXStore}=require('./store.cjs'),{createHandler,createNativeAuthenticator}=require('./http.cjs'),{PluginMediaStore}=require('./media.cjs');
+const {createPlatform}=require('./index.cjs'),{RedXStore,bridgeDatabaseName}=require('./store.cjs'),{createHandler,createNativeAuthenticator}=require('./http.cjs'),{PluginMediaStore}=require('./media.cjs');
 const {createStripeBilling,stripeClientFromEnvironment}=require('./stripe.cjs');
 const {createReadinessProbe,reviewedLegal}=require('./readiness.cjs');
 function privateFile(file){if(!path.isAbsolute(file||''))throw Error('An absolute protected configuration path is required');const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||(process.platform!=='win32'&&(st.mode&0o077)))throw Error('Server configuration must be a private regular file');return fs.readFileSync(file,'utf8');}
 async function createProductionService(env=process.env){
- const config=JSON.parse(privateFile(env.BRIDGE_CONFIG_FILE));if(!['sandbox','live'].includes(config.paymentsMode))throw Error('Explicit Stripe mode required');const priceCatalog=config.paymentsMode==='sandbox'?require('./sandbox-catalog.json'):JSON.parse(privateFile(config.stripeCatalogFile));if(priceCatalog.mode!==config.paymentsMode)throw Error('Stripe catalog mode mismatch');
+ const config=JSON.parse(privateFile(env.BRIDGE_CONFIG_FILE));bridgeDatabaseName(config.database);if(!['sandbox','live'].includes(config.paymentsMode))throw Error('Explicit Stripe mode required');const priceCatalog=config.paymentsMode==='sandbox'?require('./sandbox-catalog.json'):JSON.parse(privateFile(config.stripeCatalogFile));if(priceCatalog.mode!==config.paymentsMode)throw Error('Stripe catalog mode mismatch');
  if(!Array.isArray(config.ownerSubjects)||!config.ownerSubjects.length)throw Error('Verified canonical owner subjects have not been provisioned');
  // This adapter must come from the actual deployed account authority. Missing
  // authority blocks deployment; no local flag can substitute for MFA/ownership.
@@ -18,7 +18,7 @@ async function createProductionService(env=process.env){
  // Never accept an unrelated account-module stub as proof of stopped billing.
  let billing=null;
  authority.cancelSubscription=async(...args)=>{if(typeof billing?.cancelSubscription!=='function')throw Error('Verified subscription billing is unavailable');return billing.cancelSubscription(...args);};
- const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database||'redxai_accounts'});
+ const store=new RedXStore({base:config.redxOrigin,key:privateFile(config.redxCredentialFile).trim(),database:config.database});
  const legal=require(path.resolve(__dirname,'../../app/legal-content.cjs'));if(config.legalApproved!==true||!reviewedLegal(legal,config.legalApproval)||!reviewedLegal(legal))throw Error('Published agreements and business details have not been reviewed and approved');
  const platform=createPlatform({store,authority,ownerSubjects:config.ownerSubjects,licensePrivateKey:privateFile(config.licenseKeyFile),ipHashKey:privateFile(config.ipHashKeyFile).trim(),production:true,legalVersion:legal.version,legalDocuments:legal.documents});
  if(!/^bpc_[A-Za-z0-9]+$/.test(priceCatalog.portalConfiguration||''))throw Error('An explicit mode-specific Billing Portal configuration is required');
