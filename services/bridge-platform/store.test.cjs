@@ -13,7 +13,7 @@ test('RedX preserves the typed persisted envelope across initial insert and upda
   if(options.method!=='POST')return persisted?response(200,{record:persisted}):response(404,{code:'record_not_found'});
   const body=JSON.parse(options.body);
   if(body.expected_revision!==(persisted?.revision??0))return response(409,{code:'record_conflict'});
-  persisted=body.record;return response(200,{ok:true,revision:persisted.revision,seq:++sequence});
+  persisted=body.record;sequence++;return response(200,{ok:true,revision:persisted.revision,seq:sequence,local_seq:sequence,sequence_scope:'native-file'});
  });
  const initial=await store.load();assert.deepEqual(initial,empty());
  await store.save({...initial,revision:1,members:{alice:{tier:'gold'}}},0);
@@ -67,4 +67,17 @@ test('invalid or exhausted revision input never reaches RedX',async()=>{
   [{schema:1,revision:1,key:'different'},0],[{schema:2,revision:1},0],
  ])await assert.rejects(()=>store.save(state,expected),/Invalid platform state revision/);
  assert.equal(calls,0);
+});
+
+test('a global offset or ambiguous post-commit receipt cannot confirm native-file durability',async()=>{
+ const valid={ok:true,revision:1,seq:7,local_seq:7,sequence_scope:'native-file'};
+ for(const body of [
+  {ok:true,revision:1,seq:7},
+  {...valid,sequence_scope:'replication-log'},
+  {...valid,local_seq:0},{...valid,local_seq:'7'},
+  {...valid,local_seq:8},{...valid,seq:8},
+  {...valid,seq:Number.MAX_SAFE_INTEGER+1,local_seq:Number.MAX_SAFE_INTEGER+1},
+ ])await assert.rejects(()=>fixture(async()=>response(200,body)).save({...empty(),revision:1},0),error=>!(error instanceof Conflict)&&/did not confirm/.test(error.message));
+ await fixture(async()=>response(200,valid)).save({...empty(),revision:1},0);
+ await assert.rejects(()=>fixture(async()=>response(503,{error:'commit result unavailable'})).save({...empty(),revision:1},0),error=>!(error instanceof Conflict));
 });

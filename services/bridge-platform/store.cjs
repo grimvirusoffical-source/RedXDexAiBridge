@@ -36,7 +36,9 @@ class RedXStore {
   // native crash atomicity. Require the dedicated synchronous record-CAS API;
   // an older server is unavailable rather than silently falling back to BoxQL.
   const r=await this.call(this.recordPath,{method:'POST',body:JSON.stringify({expected_revision:expected,record})});if(r.headers?.get('x-redx-record-cas')!=='1')throw Error('Account database record-CAS capability unavailable');if(r.status===409)throw new Conflict();if(r.status!==200||!r.ok)throw Error('Account database refused platform write');
-  const ack=await r.json();if(ack?.ok!==true||ack.revision!==next.revision||!Number.isSafeInteger(ack.seq)||ack.seq<1)throw Error('Account database did not confirm a durable platform write');
+  // A host replication-log offset is not proof of this file's durable commit.
+  // Require the native-file watermark; seq is only its compatibility alias.
+  const ack=await r.json();if(ack?.ok!==true||ack.revision!==next.revision||ack.sequence_scope!=='native-file'||!Number.isSafeInteger(ack.local_seq)||ack.local_seq<1||ack.seq!==ack.local_seq)throw Error('Account database did not confirm a durable platform write');
  }
 }
 module.exports={MemoryStore,FileStore,RedXStore,Conflict,empty};
