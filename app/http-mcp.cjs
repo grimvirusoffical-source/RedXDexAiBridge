@@ -31,13 +31,22 @@ function startServer({token,clients,oauth,isOperational=()=>true,contextFor=()=>
     return json(404,{error:'Not found'});
    }
    const bearer=String(req.headers.authorization||'').startsWith('Bearer ')?String(req.headers.authorization).slice(7):'';
-   const client=clients?.verify(bearer)||oauth?.verify(bearer)||(token&&isAuthorized(req.headers.authorization,token)?{id:'local',name:'Local client',kind:'local'}:null);
+   let client=clients?.verify(bearer);
+   if(!client){
+    const identity=oauth?.verify(bearer);
+    // OAuth access records establish identity, not a replacement capability
+    // policy. Resolve the immutable local client record on every request so a
+    // verifier that omits toolProfile cannot broaden a restricted credential.
+    if(identity)client=clients?.identity?.(identity.id)||null;
+   }
+   if(!client&&!clients&&token&&isAuthorized(req.headers.authorization,token))client={id:'local',name:'Local client',kind:'local',toolProfile:'bridge'};
    const challenge=oauth?.origin?`Bearer resource_metadata="${oauth.origin}/.well-known/oauth-protected-resource/mcp", scope="bridge:tools"`:'Bearer';
    if(!client)res.setHeader('WWW-Authenticate',challenge);
    // Schema-only discovery is public on the OAuth endpoint. No computer tool
    // (including status or profile) ever executes without a verified credential.
    if(!client&&!oauth?.origin)return json(401,{error:'Authentication required'});
-   if(pathname!=='/mcp')return json(404,{error:'Not found'});
+   const pathProfile=pathname==='/terminal/mcp'?'terminal':pathname==='/crawler/mcp'?'crawler':pathname==='/mcp'?'bridge':null;
+   if(!pathProfile)return json(404,{error:'Not found'});
    if(req.method!=='POST'){res.setHeader('Allow','POST');return json(405,{error:'This server uses JSON responses; a standalone SSE stream is not provided'});}
    if(req.headers.origin)return json(403,{error:'Browser origins cannot invoke computer tools'});
    if(!String(req.headers['content-type']||'').toLowerCase().startsWith('application/json'))return json(415,{error:'JSON required'});
@@ -56,11 +65,16 @@ function startServer({token,clients,oauth,isOperational=()=>true,contextFor=()=>
      if(message.id!==undefined&&message.method==='tools/call')Object.assign(failure,{jsonrpc:'2.0',id:message.id,result:{content:[{type:'text',text:'Connect RedXDexAiBridge and approve pairing on your computer before using computer tools.'}],isError:true,_meta:{'mcp/www_authenticate':[challenge]}}});
      return json(401,failure);
     }
-    const result=await dispatch(message,{discoveryOnly:true});
+    const result=await dispatch(message,{discoveryOnly:true,toolProfiles:[pathProfile]});
     if(!result){res.writeHead(202).end();return;}return json(200,result);
    }
    let response;const started=Date.now();
-   try{response=await dispatch(message,{...contextFor(client),clientId:client.id,clientName:client.name});}
+   try{
+    const context=contextFor(client)||{};
+    const extraProfiles=require('./tool-profiles.cjs').validateProfiles(context.toolProfiles??[]);
+    const profiles=require('./tool-profiles.cjs').validateProfiles([client.toolProfile,pathProfile,...extraProfiles]);
+    response=await dispatch(message,{...context,transport:'http',interactive:false,clientId:client.id,clientName:client.name,toolProfiles:profiles});
+   }
    finally{onCall({at:Date.now(),clientId:client.id,clientName:client.name,tool:message.params?.name||message.method,durationMs:Date.now()-started,error:!!response?.result?.isError});}
    if(!response){res.writeHead(202).end();return;}json(200,response);
   }catch(e){if(!res.headersSent)json(e.status||400,{error:e.message==='Unexpected end of JSON input'?'Invalid JSON':String(e.message).slice(0,200)});else res.end();}

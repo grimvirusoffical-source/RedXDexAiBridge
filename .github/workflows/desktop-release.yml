@@ -38,6 +38,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb xdotool libgtk-3-0 libnss3 libasound2t64 libsecret-1-0 dbus-x11 libfuse2t64
       - run: npm ci --no-audit --no-fund
+      - name: Install pinned server SDK for its offline contract test
+        run: npm ci --prefix services/bridge-platform --ignore-scripts --no-audit --no-fund
       - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
@@ -57,6 +59,8 @@ jobs:
         run: |
           $env:REDXDEX_DATA_DIR = Join-Path $env:RUNNER_TEMP 'bridge-gui-data'
           $env:REDXDEX_SMOKE_OUTPUT = Join-Path $pwd 'verification/gui'
+          node scripts/gui-smoke-capture.cjs --build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\node_modules\.bin\electron.cmd .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:REDXDEX_SMOKE_OUTPUT
@@ -101,9 +105,15 @@ jobs:
       - name: Linux sign-in button interaction regression
         if: runner.os == 'Linux'
         run: xvfb-run -a --server-args='-screen 0 1280x800x24' dbus-run-session -- node_modules/.bin/electron scripts/login-interaction-smoke.cjs --no-sandbox
+      - name: Windows platform pages regression
+        if: runner.os == 'Windows'
+        run: .\node_modules\.bin\electron.cmd scripts/platform-ui-smoke.cjs
       - name: Verify direct CLI download from the published public release
         if: runner.os == 'Windows'
         run: node scripts/cli-download-live-smoke.cjs
+      - name: Linux platform pages regression
+        if: runner.os == 'Linux'
+        run: xvfb-run -a --server-args='-screen 0 1440x1000x24' dbus-run-session -- node_modules/.bin/electron scripts/platform-ui-smoke.cjs --no-sandbox
       - name: Build Windows installer
         id: windows-package
         if: runner.os == 'Windows'
@@ -164,6 +174,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify live Red-XAI Quick Login supports Bridge before publishing
         run: node scripts/check-production-auth.cjs
+      - name: Require verified production account and billing integration
+        run: node scripts/check-platform-readiness.cjs
       - name: Select the newest verified artifact IDs from this run and commit
         id: release-artifacts
         env:
@@ -214,6 +226,8 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install pinned server SDK for its offline contract test
+        run: npm ci --prefix services/bridge-platform --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - name: Compile macOS native input helper
         run: npm run prepare:native
@@ -226,12 +240,22 @@ jobs:
           set -euo pipefail
           export REDXDEX_DATA_DIR="$RUNNER_TEMP/bridge-mac-background-data"
           export REDXDEX_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-mac-background-smoke"
-          ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
+          smoke_shell_marker() {
+            printf '%s CI_SMOKE_SHELL %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$RUNNER_TEMP/bridge-mac-background.log"
+          }
+          trap 'smoke_shell_marker SIGINT; exit 130' INT
+          trap 'smoke_shell_marker SIGTERM; exit 143' TERM
+          trap 'smoke_shell_status=$?; smoke_shell_marker "EXIT status=$smoke_shell_status"' EXIT
+          smoke_shell_marker START
+          ./node_modules/.bin/electron . >> "$RUNNER_TEMP/bridge-mac-background.log" 2>&1 || { smoke_shell_marker ELECTRON_NONZERO; cat "$RUNNER_TEMP/bridge-mac-background.log"; exit 1; }
+          smoke_shell_marker ELECTRON_RETURNED_ZERO
           node -e 'const fs=require("fs"),p=process.env.REDXDEX_SMOKE_OUTPUT+"/result.json",r=JSON.parse(fs.readFileSync(p,"utf8"));if(!r.backgroundWhileHidden||r.crawlerTools!==5||r.rendererErrors?.length)process.exit(1);console.log("macOS background smoke passed",r.navigation.length,"pages");'
 
 
       - name: macOS sign-in button interaction regression
         run: ./node_modules/.bin/electron scripts/login-interaction-smoke.cjs
+      - name: macOS platform pages regression
+        run: ./node_modules/.bin/electron scripts/platform-ui-smoke.cjs
       - name: macOS Red-XAI signed-out GUI and MCP smoke
         timeout-minutes: 5
         shell: bash
@@ -242,3 +266,20 @@ jobs:
           export REDXDEX_AUTH_SMOKE_OUTPUT="$RUNNER_TEMP/bridge-auth-smoke"
           ./node_modules/.bin/electron . > "$RUNNER_TEMP/bridge-auth-smoke.log" 2>&1 || { cat "$RUNNER_TEMP/bridge-auth-smoke.log"; exit 1; }
           node -e 'const r=require(process.env.REDXDEX_AUTH_SMOKE_OUTPUT+"/result.json");if(!r.gatewayLocked||!r.accountLocked||!r.privilegedIPCRejected||!r.quickButton||!r.manualForm)process.exit(1);'
+      - name: Upload macOS smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-mac-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}/bridge-mac-background.log
+            ${{ runner.temp }}/bridge-mac-background-smoke/result.json
+            ${{ runner.temp }}/bridge-mac-background-smoke/smoke-lifecycle.jsonl
+            ${{ runner.temp }}/bridge-mac-background-smoke/*.png
+            ${{ runner.temp }}/bridge-auth-smoke.log
+            ${{ runner.temp }}/bridge-auth-smoke/result.json
+            ${{ runner.temp }}/bridge-auth-smoke/*.png
+            verification/platform-ui/result.json
+            verification/platform-ui/*.png
+          if-no-files-found: warn
+          retention-days: 14

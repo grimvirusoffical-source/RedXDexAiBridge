@@ -1,0 +1,34 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {checkPlatformReadiness}=require('../scripts/check-platform-readiness.cjs');
+const legal=require('../app/legal-content.cjs');
+const {CHECKS,DETAILS,contentHash}=require('../services/bridge-platform/readiness.cjs');
+const reviewed={version:legal.version,status:'approved',requiresReview:false,documents:['terms','privacy','agreement'].map(id=>({id,content:'Reviewed fixture '+id})),businessDetails:Object.fromEntries(DETAILS.map(key=>[key,'Reviewed fixture detail']))};reviewed.review={approved:true,businessDetailsReviewed:true,version:reviewed.version,reviewedAtMs:1,contentSha256:contentHash(reviewed)};
+const ready={ready:true,app:'bridge',issuer:'https://red-xai.com',billingMode:'live',legalVersion:legal.version,checks:Object.fromEntries(CHECKS.map(key=>[key,true]))};
+const request=value=>async()=>({ok:true,json:async()=>value});
+test('an implicit unenforced platform cannot publish even if the remote service claims readiness',async()=>{
+ let contacted=false;await assert.rejects(checkPlatformReadiness({local:{required:false},request:async()=>{contacted=true;return{ok:true,json:async()=>ready};}}),/preview/);assert.equal(contacted,false);
+});
+
+test('only the explicit inactive desktop profile can publish without paid-platform readiness',async()=>{
+ const preview={releaseProfile:'desktop-preview',required:false,shopEnabled:false,canonicalCookieTransport:false};let contacted=false;
+ const result=await checkPlatformReadiness({local:preview,documents:legal,request:async()=>{contacted=true;throw Error('Unexpected network');}});
+ assert.equal(result.releaseProfile,'desktop-preview');assert.equal(result.shopEnabled,false);assert.equal(contacted,false);
+ for(const override of [{required:true},{shopEnabled:true},{canonicalCookieTransport:true},{shopEnabled:undefined}])await assert.rejects(checkPlatformReadiness({local:{...preview,...override},documents:legal}),/Desktop preview/);
+ await assert.rejects(checkPlatformReadiness({local:{...preview,releaseProfile:'other'},documents:legal}),/Unsupported/);
+ await assert.rejects(checkPlatformReadiness({local:{releaseProfile:'production',required:true,shopEnabled:true},documents:legal}),/reviewed and approved/);
+});
+test('stable release requires every current production capability and rejects sandbox billing',async()=>{
+ assert.equal((await checkPlatformReadiness({local:{required:true},documents:reviewed,request:request(ready)})).ready,true);
+ for(const key of Object.keys(ready.checks))await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:request({...ready,checks:{...ready.checks,[key]:false}})}),/incomplete/);
+ for(const override of [{billingMode:'sandbox'},{legalVersion:'old'},{issuer:'https://example.com'},{app:'vortex'},{ready:false}])await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:request({...ready,...override})}),/incomplete/);
+ await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:async()=>({ok:false,status:404})}),/unavailable/);
+});
+test('unreviewed current draft or changed business text blocks release before contacting production',async()=>{for(const documents of [legal,{...reviewed,requiresReview:true},{...reviewed,review:{...reviewed.review,businessDetailsReviewed:false}},{...reviewed,businessDetails:{...reviewed.businessDetails,retentionPeriods:''}}]){let contacted=false;await assert.rejects(checkPlatformReadiness({local:{required:true},documents,request:async()=>{contacted=true;return{ok:true,json:async()=>ready};}}),/reviewed and approved/);assert.equal(contacted,false);}});
+test('blank missing or malformed matching agreement versions cannot pass the local or remote release gate',async()=>{
+ for(const version of ['',undefined,null,17,' ','v\n1','v/1','<version>','v'.repeat(101)]){
+  const documents=structuredClone(reviewed);if(version===undefined)delete documents.version;else documents.version=version;documents.review.version=version;documents.review.contentSha256=contentHash(documents);let contacted=false;
+  await assert.rejects(checkPlatformReadiness({local:{required:true},documents,request:async()=>{contacted=true;return{ok:true,json:async()=>({...ready,legalVersion:version})};}}),/reviewed and approved/);assert.equal(contacted,false);
+  await assert.rejects(checkPlatformReadiness({local:{required:true},documents:reviewed,request:request({...ready,legalVersion:version})}),/incomplete/);
+ }
+});

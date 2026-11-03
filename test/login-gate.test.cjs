@@ -16,7 +16,7 @@ test('main IPC must deny unauthenticated privileged control and not start MCP wi
  assert.match(main,/if\(page===LOGIN_UI&&!PUBLIC_IPC\.has\(name\)\)throw/);
  assert.match(main,/if\(!CI_SMOKE&&!PUBLIC_IPC\.has\(name\)\)await accountAuth\.ensure\(\)/);
  assert.match(main,/if\(!CI_SMOKE&&!accountAuth\.isSignedIn\(\)\)throw Error\('Sign in to Red-XAI before starting MCP'\)/);
- assert.match(main,/if\(CI_SMOKE\|\|accountAuth\.isSignedIn\(\)\)await startGateway\(\)/);
+ assert.match(main,/accountAuth\.isSignedIn\(\)&&\(!platformConfig\.required\|\|accountPlatform\.state\?\.accepted\)/);
  assert.match(main,/accountAuth\.session=null/);
  assert.match(main,/account:logout/);
  assert.match(main,/AUTH_SMOKE=!app\.isPackaged/);

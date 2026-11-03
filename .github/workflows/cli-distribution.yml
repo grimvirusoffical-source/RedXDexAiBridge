@@ -1,0 +1,48 @@
+name: Verified public CLI distribution
+on:
+  push:
+    branches: ['cli-v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verified-cli-0.3.0
+  cancel-in-progress: false
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check package integrity
+        run: node scripts/verify-cli-package.cjs
+      - name: Install CLI into isolated verification folder
+        run: npm install --prefix verification/cli --ignore-scripts --no-audit --no-fund ./distribution/cli/redxai-cli-0.3.0.tgz
+      - name: Check actual CLI commands
+        run: |
+          node verification/cli/node_modules/redxai/bin/redxai.cjs --version
+          node verification/cli/node_modules/redxai/bin/redxai.cjs --help
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: node scripts/verify-cli-package.cjs
+      - name: Publish only the tested CLI package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view cli-v0.3.0 --json isDraft >/dev/null 2>&1; then
+            gh release create cli-v0.3.0 --draft --target "$GITHUB_SHA" --latest=false --title "Red-XAI CLI 0.3.0" --notes-file distribution/cli/RELEASE.md
+          fi
+          test "$(gh release view cli-v0.3.0 --json isDraft --jq .isDraft)" = true
+          gh release upload cli-v0.3.0 distribution/cli/redxai-cli-0.3.0.tgz distribution/cli/SHA256SUMS-cli --clobber
+          gh release edit cli-v0.3.0 --draft=false --prerelease=false --latest=false

@@ -16,6 +16,14 @@ const desktopLease=new DesktopLease();
 const native=require('./native.cjs');
 const configPath=path.join(root,'settings.json');
 const {permissionMode,permissionStatus}=require('./permission-policy.cjs');
+let platformMeter=null;
+function configurePlatformMeter(meter){platformMeter=meter;}
+function checkWork(context){context.work?.meter?.assertActive?.();}
+async function beginWork(context){
+ if(platformMeter&&context.work&&!context.work.finish&&!require('./platform-meter.cjs').POLLING.has(context.summary)){
+  const meter=platformMeter;context.work.finish=await meter.begin(context.summary,context);context.work.meter=meter;checkWork(context);
+ }
+}
 const defaults={directories:[], permissions:{list:true,read:false,write:false,terminal:false,crawl:false,screenshot:false,mouse:false,keyboard:false,apps:false}, maxReadBytes:1048576, maxOutputBytes:65536, emergencyStop:false, clientPolicies:{}, keepRunning:true, launchAtLogin:false, startHidden:false, backgroundOnly:false, clientExecution:{}, maxProcesses:32, maxProcessesPerClient:8, maxConcurrentRequests:64, maxRequestsPerClient:16};
 const MAX_LIMIT=8*1024*1024;
 function settings(){try {const c=JSON.parse(fs.readFileSync(configPath,'utf8'));return {...defaults,...c,permissions:{...defaults.permissions,...c.permissions},directories:Array.isArray(c.directories)?c.directories:[],clientPolicies:c.clientPolicies&&typeof c.clientPolicies==='object'&&!Array.isArray(c.clientPolicies)?c.clientPolicies:{}};}catch{return structuredClone(defaults);}}
@@ -23,7 +31,7 @@ function saveSettings(s){if(!s||typeof s!=='object'||Array.isArray(s))throw Erro
 async function ensurePermission(name,context={}){
  const s=settings();if(s.emergencyStop)throw Error('Emergency stop is active');
  if(context.isActive&&!context.isActive())throw Error('Client access has been revoked');
- if(context.interactive===true)return;
+ if(context.interactive===true){await beginWork(context);return;}
  const id=context.clientId||process.env.REDXDEX_CLIENT_ID||'local';
  // A paired client must never inherit a machine-wide capability merely because
  // its individual policy is missing (for example after a migration or crash).
@@ -41,6 +49,7 @@ async function ensurePermission(name,context={}){
   if(!['once','always'].includes(decision))throw Error('Permission denied');
   if(decision==='always'){const fresh=settings();fresh.clientPolicies[id]={...fresh.clientPolicies[id],[name]:'always'};saveSettings(fresh);}
  } else if(mode!=='always')throw Error('Permission disabled: '+name);
+ await beginWork(context);
 }
 
 function allowedPath(p){if(typeof p!=='string'||!p.trim())throw Error('A path is required');const abs=path.resolve(p);const real=fs.realpathSync(abs);const protectedRoot=fs.existsSync(root)?fs.realpathSync(root):path.resolve(root);if(real===protectedRoot||real.startsWith(protectedRoot+path.sep))throw Error('Bridge credentials and policy files are protected');const folders=settings().directories; if(!folders.some(d=>{try{const base=fs.realpathSync(d);return real===base||real.startsWith(base+path.sep);}catch{return false;}}))throw Error('Path is outside approved folders');return real;}
@@ -81,13 +90,13 @@ definitions.push({name:'get_profile',description:'Return the authenticated compu
 definitions.push({name:'desktop_release',description:'Release only your own shared-desktop lease after completing a mouse/keyboard sequence',inputSchema:obj({})},{name:'desktop_lease_status',description:'Check whether the shared physical desktop is available, without exposing another AI identity',inputSchema:obj({})});
 for(const d of definitions){d.securitySchemes=[{type:'oauth2',scopes:['bridge:tools']}];d._meta={...d._meta,securitySchemes:d.securitySchemes};d.inputSchema.additionalProperties=false;d.annotations={readOnlyHint:['desktop_lease_status','get_profile','bridge_status','list_files','read_text_file','file_info','search_files','process_list','process_output','desktop_screenshot','crawl_list','crawl_status','crawl_results'].includes(d.name),destructiveHint:['write_text_file','run_command','process_start','process_input','process_stop','desktop_mouse','desktop_key','desktop_type','trash_file','move_file','crawl_start','crawl_stop'].includes(d.name),openWorldHint:['run_command','process_start','open_application','desktop_mouse','desktop_type','desktop_key','crawl_start'].includes(d.name)};}
 
-async function perform(name,args={},context={}){
+async function performImpl(name,args={},context={}){
 context={...context,summary:name,details:JSON.stringify(args,(key,value)=>['content','text','input'].includes(key)?'[content omitted]':value).slice(0,4096)};
 const clientId=context.clientId||process.env.REDXDEX_CLIENT_ID||'local';
 context.clientId=clientId;
 assertExecution(name,settings(),context);
 if(FOCUS_ACTIONS.has(name)&&context.desktopLocked!==true){
- return desktopLease.run(clientId,()=>perform(name,args,{...context,desktopLocked:true}),()=>{const s=settings();if(s.emergencyStop)throw Error('Emergency stop is active');if(context.isActive&&!context.isActive())throw Error('Client access revoked');assertExecution(name,s,context);});
+ return desktopLease.run(clientId,()=>performImpl(name,args,{...context,desktopLocked:true}),()=>{const s=settings();if(s.emergencyStop)throw Error('Emergency stop is active');if(context.isActive&&!context.isActive())throw Error('Client access revoked');assertExecution(name,s,context);});
 }
 if(name==='desktop_release')return {text:JSON.stringify(desktopLease.release(clientId))};
 if(name==='desktop_lease_status')return {text:JSON.stringify(desktopLease.status(clientId))};
@@ -103,7 +112,7 @@ if(name==='bridge_status'){const s=settings();return {text:JSON.stringify({app:'
 if(name==='list_files'){await ensurePermission('list',context);const p=allowedPath(args.path);return{text:JSON.stringify(fs.readdirSync(p,{withFileTypes:true}).slice(0,500).map(e=>({name:e.name,type:e.isDirectory()?'directory':'file'})),null,2)};}
 if(name==='read_text_file'){await ensurePermission('read',context);const p=allowedPath(args.path);const fd=fs.openSync(p,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));try{const stat=fs.fstatSync(fd);if(!stat.isFile())throw Error('Target must be a regular file');if(stat.size>settings().maxReadBytes)throw Error('File exceeds read size limit');const content=fs.readFileSync(fd,'utf8');if(Buffer.byteLength(content)>settings().maxReadBytes)throw Error('File exceeds read size limit');return{text:content};}finally{fs.closeSync(fd)}}
 if(name==='write_text_file'){await ensurePermission('write',context);if(typeof args.content!=='string'||Buffer.byteLength(args.content)>settings().maxReadBytes)throw Error('Invalid or oversized content');const p=writePath(args.path);const flags=fs.constants.O_WRONLY|fs.constants.O_CREAT|(fs.constants.O_NOFOLLOW||0);const fd=fs.openSync(p,flags,0o600);try{if(!fs.fstatSync(fd).isFile())throw Error('Target must be a regular file');fs.ftruncateSync(fd,0);fs.writeFileSync(fd,args.content);}finally{fs.closeSync(fd)}return{text:'Saved '+p};}
-if(name==='run_command'){await ensurePermission('terminal',context);const cwd=allowedPath(args.cwd);if(!fs.statSync(cwd).isDirectory())throw Error('cwd must be a directory');const session=processes.start({command:args.command,args:args.args||[],cwd,clientId,timeoutMs:15000});let output;do{await new Promise(r=>setTimeout(r,30));if(settings().emergencyStop||(context.isActive&&!context.isActive())){processes.stop(session.id,clientId);throw Error('Command stopped because access was disabled');}output=processes.read(session.id,clientId);}while(output.running);return {text:output.output.slice(-settings().maxOutputBytes)+'\nExit code: '+output.exitCode};}
+if(name==='run_command'){await ensurePermission('terminal',context);const cwd=allowedPath(args.cwd);if(!fs.statSync(cwd).isDirectory())throw Error('cwd must be a directory');const session=processes.start({command:args.command,args:args.args||[],cwd,clientId,timeoutMs:15000});let output;do{await new Promise(r=>setTimeout(r,30));try{checkWork(context);}catch(error){processes.stop(session.id,clientId);throw error;}if(settings().emergencyStop||(context.isActive&&!context.isActive())){processes.stop(session.id,clientId);throw Error('Command stopped because access was disabled');}output=processes.read(session.id,clientId);}while(output.running);return {text:output.output.slice(-settings().maxOutputBytes)+'\nExit code: '+output.exitCode};}
 if(name==='open_application'){await ensurePermission('apps',context);return native.openApplication(args.name);}
 if(name==='desktop_type'){await ensurePermission('keyboard',context);if(typeof args.text!=='string'||args.text.length>8000)throw Error('Text must be 8000 characters or fewer');await native.control({action:'type',text:args.text});return {text:'Typed into focused application'};}
 if(name==='desktop_key'){await ensurePermission('keyboard',context);await native.control({action:'key',key:args.key,modifiers:args.modifiers||[]});return {text:'Key sent'};}
@@ -116,8 +125,8 @@ if(name==='process_input'){await ensurePermission('terminal',context);return {te
 if(name==='process_stop'){await ensurePermission('terminal',context);return {text:JSON.stringify(processes.stop(args.id,clientId))};}
 if(name==='crawl_start'){
  await ensurePermission('crawl',context);
- const check=()=>{const s=settings();return !s.emergencyStop&&(!context.isActive||context.isActive())&&(context.interactive===true||s.clientPolicies[clientId]?.crawl!=='deny');};
- return {text:JSON.stringify(crawlJobs.start(args,clientId,{check}))};
+ const check=()=>{try{checkWork(context);}catch{return false;}const s=settings();return !s.emergencyStop&&(!context.isActive||context.isActive())&&(context.interactive===true||s.clientPolicies[clientId]?.crawl!=='deny');};
+ return {text:JSON.stringify(crawlJobs.start(args,clientId,{check,beforePage:async()=>{if(context.work?.meter)await context.work.meter.crawlerPage();}}))};
 }
 if(name==='crawl_list'){await ensurePermission('crawl',context);return {text:JSON.stringify(crawlJobs.list(clientId))};}
 if(name==='crawl_status'){await ensurePermission('crawl',context);return {text:JSON.stringify(crawlJobs.status(args.id,clientId))};}
@@ -127,7 +136,20 @@ if(name==='file_info'){await ensurePermission('list',context);const p=allowedPat
 if(name==='make_directory'){await ensurePermission('write',context);const parent=allowedPath(path.dirname(path.resolve(args.path))),target=path.join(parent,path.basename(args.path));fs.mkdirSync(target,{mode:0o700});return {text:'Created '+target};}
 if(name==='move_file'){await ensurePermission('write',context);const from=allowedPath(args.source),to=writePath(args.destination);if(settings().directories.includes(from))throw Error('Cannot move an approved root folder');if(fs.existsSync(to))throw Error('Destination already exists');fs.renameSync(from,to);return {text:'Moved to '+to};}
 if(name==='trash_file'){await ensurePermission('write',context);const from=allowedPath(args.path);if(settings().directories.includes(from))throw Error('Cannot trash an approved root folder');const dir=path.join(root,'trash');fs.mkdirSync(dir,{recursive:true,mode:0o700});const to=path.join(dir,require('node:crypto').randomUUID()+'-'+path.basename(from));fs.renameSync(from,to);return {text:'Moved to recoverable bridge trash: '+to};}
-if(name==='search_files'){await ensurePermission('list',context);const base=allowedPath(args.path),query=String(args.query||'').toLowerCase();let visited=0,results=[],queue=[base];while(queue.length&&visited<20000){const dir=queue.shift();for(const e of fs.readdirSync(dir,{withFileTypes:true})){if(++visited>20000)break;const p=path.join(dir,e.name);if(e.isSymbolicLink())continue;try{allowedPath(p);}catch{continue;}if(e.isDirectory()){if(!['node_modules','.git'].includes(e.name))queue.push(p);}else if(e.isFile()&&e.name.toLowerCase().includes(query)){const st=fs.statSync(p);results.push({path:p,size:st.size});if(results.length>5000)break;}}if(results.length>5000)break;}if(args.sort==='size')results.sort((a,b)=>b.size-a.size);return {text:JSON.stringify({results:results.slice(0,Math.min(Math.max(Number(args.limit)||100,1),500)),visited,truncated:queue.length>0||results.length>500})};}
+if(name==='search_files'){await ensurePermission('list',context);const base=allowedPath(args.path),query=String(args.query||'').toLowerCase();let visited=0,results=[],queue=[base];while(queue.length&&visited<20000){checkWork(context);const dir=queue.shift();for(const e of fs.readdirSync(dir,{withFileTypes:true})){if(++visited>20000)break;checkWork(context);const p=path.join(dir,e.name);if(e.isSymbolicLink())continue;try{allowedPath(p);}catch{continue;}if(e.isDirectory()){if(!['node_modules','.git'].includes(e.name))queue.push(p);}else if(e.isFile()&&e.name.toLowerCase().includes(query)){const st=fs.statSync(p);results.push({path:p,size:st.size});if(results.length>5000)break;}}if(results.length>5000)break;}if(args.sort==='size')results.sort((a,b)=>b.size-a.size);return {text:JSON.stringify({results:results.slice(0,Math.min(Math.max(Number(args.limit)||100,1),500)),visited,truncated:queue.length>0||results.length>500})};}
 throw Error('Unknown tool '+name);
 }
-module.exports={settings,saveSettings,allowedPath,perform,definitions,configPath,root,processes,crawlJobs,ensurePermission,desktopLease};
+async function perform(name,args={},context={}){
+ const work={finish:null};let background=false;
+ try{
+  const result=await performImpl(name,args,{...context,work});checkWork({work});
+  if(work.finish&&['process_start','crawl_start'].includes(name)){
+   const job=JSON.parse(result.text),clientId=context.clientId||process.env.REDXDEX_CLIENT_ID||'local';
+   const running=()=>name==='process_start'?processes.read(job.id,clientId).running:['queued','running'].includes(crawlJobs.status(job.id,clientId).status);
+   const subscribe=name==='process_start'?callback=>{const child=processes.sessions.get(job.id)?.child;if(!child)return;child.once('close',callback);return()=>child.removeListener('close',callback);}:undefined;
+   require('./platform-meter.cjs').trackBackgroundWork({finish:work.finish,isRunning:running,subscribe});background=true;
+  }
+  return result;
+ }finally{if(work.finish&&!background)await work.finish();}
+}
+module.exports={settings,saveSettings,allowedPath,perform,definitions,configPath,root,processes,crawlJobs,ensurePermission,desktopLease,configurePlatformMeter};

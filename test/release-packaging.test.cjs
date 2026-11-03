@@ -4,7 +4,7 @@ const root=path.join(__dirname,'..');
 const json=name=>JSON.parse(fs.readFileSync(path.join(root,name),'utf8'));
 test('release metadata and installer versions are synchronized',()=>{
  const p=json('package.json'),lock=json('package-lock.json');
- assert.equal(p.version,'0.10.19');
+ assert.equal(p.version,'0.10.20');
  assert.equal(lock.version,p.version);
  assert.equal(lock.packages[''].version,p.version);
  assert.equal(p.build.nsis.oneClick,true);

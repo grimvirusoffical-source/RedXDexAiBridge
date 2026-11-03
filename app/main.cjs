@@ -7,12 +7,28 @@ if(process.argv.includes('--self-test')&&(!process.env.REDXDEX_DATA_DIR||!proces
 const core=require('./core.cjs'),vortex=require('./vortex.cjs'),setup=require('./setup.cjs'),native=require('./native.cjs'),quickSetup=require('./quick-setup.cjs');
 const {startServer}=require('./http-mcp.cjs'),{ClientStore,atomicJSON}=require('./clients.cjs'),{ApprovalQueue}=require('./approvals.cjs'),{OAuthService}=require('./oauth.cjs'),{Tunnel}=require('./tunnel.cjs'),{createUpdateController}=require('./auto-update.cjs');
 const {RedXAIAccount}=require('./redxai-auth.cjs');
+const {PlatformClient}=require('./platform-client.cjs');
+const {createPlatformIPC,guardPlatformIPC}=require('./platform-release.cjs');
+const platformConfig=require('./platform-config.cjs');
+let accountPlatform,workMeter,pluginRunner,meterQuitPending=false,meterQuitSettled=false,platformConnectionPending=false,platformConnectionEpoch=0,gatewayStarting=null;
 const {validateRemoteConfig}=require('./tunnel-modes.cjs');
 let win,tray,gateway,clients,oauth,approvals,tunnel,updateController,accountAuth,quitting=false;const activity=[];
 let lastNotifiedHandoffUrl=null;
 const UI=pathToFileURL(path.join(__dirname,'index.html')).href;
 const LOGIN_UI=pathToFileURL(path.join(__dirname,'sign-in.html')).href;
 const CI_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_SMOKE_OUTPUT;
+const SMOKE_DIAGNOSTICS=CI_SMOKE&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted';
+const smokeEpoch=Date.now();
+function smokeTrace(event,detail={}){
+ if(!SMOKE_DIAGNOSTICS)return;
+ const record={utc:new Date().toISOString(),elapsedMs:Date.now()-smokeEpoch,pid:process.pid,platform:process.platform,event,...detail};
+ console.error('SMOKE_DIAGNOSTIC '+JSON.stringify(record));
+ try{fs.mkdirSync(process.env.REDXDEX_SMOKE_OUTPUT,{recursive:true});fs.appendFileSync(path.join(process.env.REDXDEX_SMOKE_OUTPUT,'smoke-lifecycle.jsonl'),JSON.stringify(record)+'\n');}catch{console.error('SMOKE_DIAGNOSTIC lifecycle file write failed');}
+}
+if(SMOKE_DIAGNOSTICS){
+ process.once('exit',code=>smokeTrace('node-exit',{code}));
+ app.on('quit',(_event,code)=>smokeTrace('app-quit',{code}));
+}
 const AUTH_SMOKE=!app.isPackaged&&!!process.env.REDXDEX_AUTH_SMOKE_OUTPUT;
 const PUBLIC_IPC=new Set(['account:status','account:quick:start','account:quick:open','account:quick:poll','account:quick:cancel','account:manual:login','account:manual:2fa','account:manual:call','account:manual:cancel','account:logout','account:signup','cli:download','app:version','updates:status','app:updates','updates:download','updates:install']);
 app.setPath('userData',path.join(app.getPath('appData'),'redxdex-ai-bridge'));
@@ -49,23 +65,32 @@ if(process.argv.includes('--vortex-diagnostic')){
   if(!win||e.sender!==win.webContents||e.senderFrame!==win.webContents.mainFrame||![UI,LOGIN_UI].includes(page))throw Error('Untrusted IPC sender');
   if(page===LOGIN_UI&&!PUBLIC_IPC.has(name))throw Error('Sign in before using Bridge');
   if(!CI_SMOKE&&!PUBLIC_IPC.has(name))await accountAuth.ensure();
-  return fn(...args);
+  return guardPlatformIPC(platformConfig,name,fn)(...args);
  });}
  function defaultClient(id){const s=core.settings();s.clientPolicies[id]=Object.fromEntries(Object.keys(s.permissions).map(k=>[k,'ask']));core.saveSettings(s);emit('clients',clients.list());}
  function runtime(){return {version:app.getVersion(),platform:process.platform,arch:process.arch,packaged:app.isPackaged,account:accountAuth.status(),gateway:gateway?{running:true,url:gateway.url}:{running:false},remote:tunnel.status(),clients:clients.list(),settings:core.settings(),approvals:approvals.list(),activity:activity.slice(0,100),updates:updateController.status(),toolCount:core.definitions.length};}
  async function startGateway(){
   if(!CI_SMOKE&&!accountAuth.isSignedIn())throw Error('Sign in to Red-XAI before starting MCP');
+  if(!CI_SMOKE&&platformConfig.required&&accountPlatform.state?.accepted!==true)throw Error('Review and accept the Bridge agreements before connecting tools');
   if(gateway)return {running:true,url:gateway.url};
-  gateway=await startServer({clients,oauth,port:tunnel?.config()?.mode==='named'?tunnel.config().localPort:0,isOperational:()=>CI_SMOKE||accountAuth.isSignedIn(),
-   contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id)&&(CI_SMOKE||accountAuth.isSignedIn()),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});
-  atomicJSON(path.join(core.root,'runtime.json'),{url:gateway.url,pid:process.pid,version:app.getVersion()});
-  return {running:true,url:gateway.url};
+  if(gatewayStarting)return gatewayStarting;
+  const epoch=platformConnectionEpoch,task=(async()=>{
+   const created=await startServer({clients,oauth,port:tunnel?.config()?.mode==='named'?tunnel.config().localPort:0,isOperational:()=>CI_SMOKE||accountAuth.isSignedIn(),
+    contextFor:c=>({transport:'http',isActive:()=>clients.exists(c.id)&&(CI_SMOKE||accountAuth.isSignedIn()),authorize:detail=>approvals.request({kind:'tool',...detail})}),onCall:audit});
+   if(epoch!==platformConnectionEpoch||!CI_SMOKE&&(!accountAuth.isSignedIn()||platformConfig.required&&accountPlatform.state?.accepted!==true)){await created.stop().catch(()=>{});throw Error('Gateway start was cancelled');}
+   try{atomicJSON(path.join(core.root,'runtime.json'),{url:created.url,pid:process.pid,version:app.getVersion()});}catch(error){await created.stop().catch(()=>{});throw error;}
+   gateway=created;return {running:true,url:gateway.url};
+  })();gatewayStarting=task;
+  try{return await task;}finally{if(gatewayStarting===task)gatewayStarting=null;}
  }
  async function shutDownGateway(){
+  platformConnectionPending=false;platformConnectionEpoch++;
+  const settlement=workMeter?.stop();
   tunnel.stop();approvals.cancelAll('Red-XAI sign-out');core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();
   const old=gateway;gateway=null;
   if(old){old.server.closeAllConnections?.();await old.stop().catch(()=>{});}
   try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}
+  await settlement?.catch(()=>{});
  }
  async function showLogin(){
   accountAuth.session=null;accountAuth.emit();
@@ -75,12 +100,31 @@ if(process.argv.includes('--vortex-diagnostic')){
  }
  async function openAfterLogin(){
   if(!accountAuth.isSignedIn())throw Error('Red-XAI account is not verified');
-  await startGateway();
+  const connectionEpoch=platformConnectionEpoch,authEpoch=accountAuth.authEpoch,sub=accountAuth.session?.sub;
+  const current=()=>{if(authEpoch!==accountAuth.authEpoch||sub!==accountAuth.session?.sub||!accountAuth.isSignedIn())throw Error('Red-XAI account is no longer verified');};
+  let platformReady=!platformConfig.required;
+  if(platformConfig.required){try{platformReady=(await refreshPlatformAccount({resume:false})).accepted===true;}catch(e){current();emit('platform:state',{available:false,message:e.message});}}
+  current();
+  if(connectionEpoch===platformConnectionEpoch){platformConnectionPending=platformConfig.required&&!platformReady;if(platformReady)await startGateway();}
   if(win.webContents.getURL()!==UI)await win.loadFile(path.join(__dirname,'index.html'));
-  if(remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
+  current();
+  if(connectionEpoch===platformConnectionEpoch&&platformReady&&gateway&&remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
   return accountAuth.status();
  }
- function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
+ async function refreshPlatformAccount({resume=true}={}){
+  const epoch=accountAuth.authEpoch,sub=accountAuth.session?.sub,connectionEpoch=platformConnectionEpoch;
+  const current=()=>{if(epoch!==accountAuth.authEpoch||!sub||sub!==accountAuth.session?.sub||!accountAuth.isSignedIn())throw Error('Platform account verification was cancelled');};
+  const me=await accountPlatform.status();current();
+  if(me.sub!==sub)throw Error('Platform account identity did not match');
+  let recoveryMessage='';
+  if(workMeter?.failed){try{await workMeter.recover();}catch(error){recoveryMessage=String(error.message||'Active work remains paused').slice(0,600);}}
+  current();const latest=accountPlatform.state||me;
+  if(latest.sub!==sub)throw Error('Platform account identity did not match');
+  const snapshot={...latest,...(workMeter?{clientUsageStatus:{blocked:!!workMeter.failed,message:workMeter.failed?(recoveryMessage||String(workMeter.failed.message||'Active work is paused').slice(0,600)):''}}:{})};
+  if(resume&&platformConnectionPending&&connectionEpoch===platformConnectionEpoch&&platformConfig.required&&snapshot.accepted===true&&!gateway){platformConnectionPending=false;try{await startGateway();}catch(error){if(connectionEpoch===platformConnectionEpoch)platformConnectionPending=true;throw error;}current();if(connectionEpoch===platformConnectionEpoch&&gateway&&remoteAutoConnect())tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));}
+  emit('platform:state',snapshot);return snapshot;
+ }
+ function stopEverything(){const s=core.settings();s.emergencyStop=true;core.saveSettings(s);approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();workMeter?.stop().catch(()=>{});emit('settings',s);audit({at:Date.now(),tool:'emergency_stop',clientName:'Desktop',error:false});return s;}
  function remoteAutoConnect(){return require('./remote-preferences.cjs').enabled(core.root);}
  function rememberRemote(enabled){require('./remote-preferences.cjs').remember(core.root,enabled);}
  function clientSpec(client){if(!['codex','chatgpt','claude','vscode','cursor','gemini','vortex','Diagnostics'].includes(client))throw Error('Unsupported local client');const credentialFile=path.join(core.root,'credentials',client+'.json');let c;if(fs.existsSync(credentialFile)){c=JSON.parse(fs.readFileSync(credentialFile));if(!clients.exists(c.id))c=null;}
@@ -106,7 +150,12 @@ if(process.argv.includes('--vortex-diagnostic')){
     },
     onChange:value=>emit('account:state',value)
    });
+   accountPlatform=new PlatformClient({credentials:async()=>{await accountAuth.ensure();return accountAuth.session;},loadSecret:async name=>readSecret(name),saveSecret:async(name,value)=>saveSecret(name,value),clearSecret:async name=>{try{fs.unlinkSync(secretFile(name));}catch(e){if(e.code!=='ENOENT')throw e;}},label:os.hostname()});
+   pluginRunner=new (require('./plugin-runner.cjs').PluginRunner)({platform:accountPlatform,perform:core.perform,loadSecret:async name=>readSecret(name),saveSecret:async(name,value)=>saveSecret(name,value)});
+   if(platformConfig.required&&!CI_SMOKE&&!AUTH_SMOKE){workMeter=new (require('./platform-meter.cjs').PlatformMeter)({client:accountPlatform,onChange:()=>emit('platform:state',{refresh:true,reason:'usage'}),stopWork:()=>{core.processes.stopAll();core.crawlJobs.stopAll();core.desktopLease.reset();}});core.configurePlatformMeter(workMeter);}
    if(!CI_SMOKE)await accountAuth.restore();
+   if(platformConfig.required&&accountAuth.isSignedIn())await accountPlatform.status().catch(()=>{});
+   platformConnectionPending=platformConfig.required&&accountAuth.isSignedIn()&&accountPlatform.state?.accepted!==true;
   tunnel=new Tunnel(s=>{
    if(s.url)oauth.setOrigin(new URL(s.url).origin);else oauth.origin=null;
    atomicJSON(path.join(core.root,'remote-status.json'),s);emit('remote',s);
@@ -131,7 +180,7 @@ if(process.argv.includes('--vortex-diagnostic')){
   win.on('close',e=>{if(!quitting&&core.settings().keepRunning){e.preventDefault();win.hide();}});
   const icon=nativeImage.createFromPath(path.join(__dirname,'assets','bridge-icon.png')).resize({width:20,height:20});
   tray=new Tray(icon);if(process.platform==='darwin')tray.setTitle('RX');tray.setToolTip('RedXDexAiBridge — computer access');tray.setContextMenu(Menu.buildFromTemplate([{label:'Open RedXDexAiBridge',click:show},{label:'STOP all computer control',click:stopEverything},{type:'separator'},{label:'Quit bridge and disconnect',click:()=>{quitting=true;app.quit();}}]));tray.on('click',show);
-  if(CI_SMOKE||accountAuth.isSignedIn())await startGateway();
+  if(CI_SMOKE||(accountAuth.isSignedIn()&&(!platformConfig.required||accountPlatform.state?.accepted)))await startGateway();
   if(process.env.REDXDEX_SMOKE_OUTPUT&&(!app.isPackaged||process.argv.includes('--self-test'))){console.error('SMOKE gateway ready');setTimeout(()=>console.error('SMOKE frame',win.webContents.getURL(),'loading',win.webContents.isLoading()),3000);}
   const rendererErrors=[];win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)rendererErrors.push(event.message);});
    await win.loadFile(path.join(__dirname,(CI_SMOKE||accountAuth.isSignedIn())?'index.html':'sign-in.html'));
@@ -184,7 +233,26 @@ if(process.argv.includes('--vortex-diagnostic')){
    win.show();
    console.error('SMOKE navigation returned');const out=process.env.REDXDEX_SMOKE_OUTPUT;fs.mkdirSync(out,{recursive:true});
    result.windowBounds=win.getBounds();result.displayWorkArea=require('electron').screen.getDisplayMatching(result.windowBounds).workArea;
-   let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);if(image.isEmpty())throw Error('Empty UI capture');fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());result.uiCapture=true;captureError=null;break;}catch(error){captureError=error;}}
+   if(CI_SMOKE&&process.platform==='win32'&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted'&&process.env.RUNNER_OS==='Windows'){
+    // Electron capturePage can block its Windows CI main loop before a JS
+    // timeout can run. Capture only this owned fixture through a bounded GDI
+    // child process; production screenshot behavior is unchanged.
+    result.uiCaptures=[];
+    for(const page of ['overview','connections','settings']){
+     const visible=await win.webContents.executeJavaScript(`(()=>{document.querySelector('[data-page="'+${JSON.stringify(page)}+'"]')?.click();const element=document.getElementById('page-'+${JSON.stringify(page)});return !!element&&!element.hidden;})()`);
+     if(!visible)throw Error('GUI screenshot page did not open: '+page);
+     const file=path.join(out,page==='overview'?'ui.png':'ui-'+page+'.png');
+     console.error('SMOKE external page capture',page);
+     smokeTrace('external-capture-start',{page});
+     const metadata=await require('../scripts/gui-smoke-capture.cjs').capture({window:win,output:file});
+     smokeTrace('external-capture-return',{page});
+     metadata.page=page;metadata.version=result.version;fs.writeFileSync(file.replace(/\.png$/,'.capture.json'),JSON.stringify(metadata,null,2));
+     result.uiCaptures.push({page,file:path.basename(file),captureMode:metadata.captureMode,sha256:metadata.sha256});
+    }
+    if(new Set(result.uiCaptures.map(capture=>capture.sha256)).size!==3)throw Error('GUI screenshots did not show three distinct rendered pages');
+    result.uiCapture=true;result.uiCaptureMode='desktopOwnedClientRect';
+   }else{
+   let captureError;for(let attempt=0;attempt<3;attempt++){try{await new Promise(r=>setTimeout(r,300));console.error('SMOKE page capture attempt',attempt);smokeTrace('capture-start',{attempt});const image=await Promise.race([win.webContents.capturePage(),new Promise((_,reject)=>setTimeout(()=>reject(Error('UI capture timed out')),5000))]);smokeTrace('capture-return',{attempt});if(image.isEmpty())throw Error('Empty UI capture');smokeTrace('png-write-start',{attempt});fs.writeFileSync(path.join(out,'ui.png'),image.toPNG());smokeTrace('png-write-complete',{attempt});result.uiCapture=true;captureError=null;break;}catch(error){smokeTrace('capture-error',{attempt,errorName:error.name});captureError=error;}}
    if(captureError){
     result.uiCapture=false;result.uiCaptureError=captureError.message;
     try {
@@ -197,8 +265,11 @@ if(process.argv.includes('--vortex-diagnostic')){
      result.desktopCaptureFallback=false;result.desktopCaptureError=error.message;
     }
    }
+   }
+   smokeTrace('result-write-start');
    fs.writeFileSync(path.join(out,'result.json'),JSON.stringify({...result,rendererErrors},null,2));
-   quitting=true;app.exit(0);return;
+   smokeTrace('result-write-complete');
+   quitting=true;smokeTrace('exit-requested',{code:0});app.exit(0);smokeTrace('exit-returned',{code:0});return;
   }
   if((CI_SMOKE||accountAuth.isSignedIn())&&process.argv.includes('--pair-local-chatgpt'))clientSpec('chatgpt');
   if(gateway&&(process.argv.includes('--connect-remote')||remoteAutoConnect()))tunnel.start(gateway.url).catch(e=>emit('remote',{phase:'error',message:e.message}));
@@ -231,6 +302,15 @@ if(process.argv.includes('--vortex-diagnostic')){
   ipc('account:logout',async()=>{await shutDownGateway();await accountAuth.logout();await win.loadFile(path.join(__dirname,'sign-in.html'));return {signedIn:false};});
   ipc('account:signup',()=>shell.openExternal('https://red-xai.com/signup'));
   ipc('cli:download',async()=>{const chosen=await dialog.showOpenDialog(win,{title:'Download Red-XAI CLI',properties:['openDirectory','createDirectory']});if(chosen.canceled)return{cancelled:true};const result=await require('./cli-download.cjs').downloadCli({directory:chosen.filePaths[0],onProgress:value=>emit('cli:progress',value)});return{...result,message:'CLI '+result.version+' downloaded to '+result.path+'. Node.js 20 or newer is required to run it.'};});
+  const platformHandlers=createPlatformIPC({config:platformConfig,
+   status:async()=>{if(CI_SMOKE)return{available:false,message:'The account platform is unavailable in the isolated application smoke test.'};return refreshPlatformAccount();},
+   request:async(route,data={})=>{if(CI_SMOKE)throw Error('The account platform is unavailable in the isolated application smoke test.');if(route==='/plugins/checkpoints')return pluginRunner.listCheckpoints();if(route==='/plugins/run')return pluginRunner.run(data,{interactive:true,clientId:'Desktop',transport:'desktop'});const result=await accountPlatform.call(route,data);if(['/legal/accept','/plugins/acquire','/purchase/credits'].includes(route))await refreshPlatformAccount();if(['/account/reset','/account/delete'].includes(route)){await shutDownGateway();await accountAuth.logout();if(route==='/account/reset')await accountPlatform.forgetDevice();await win.loadFile(path.join(__dirname,'sign-in.html'));}return result;},
+   checkout:async data=>{if(CI_SMOKE)throw Error('The account platform is unavailable in the isolated application smoke test.');let result;if(data.kind==='stripe-dashboard'){const status=await accountPlatform.call('/admin/stripe/status');result={url:status.dashboardUrl};}else if(data.kind==='portal')result=await accountPlatform.call('/billing/portal');else result=await accountPlatform.checkout(data);const u=new URL(result.url);if(u.protocol!=='https:'||!['checkout.stripe.com','billing.stripe.com','dashboard.stripe.com'].includes(u.hostname)||u.username||u.password)throw Error('Untrusted payment address');await shell.openExternal(u.href);return{opened:true};}
+  });
+  for(const [name,handler]of Object.entries(platformHandlers))ipc(name,handler);
+
+  ipc('clients:tool-profile',async({profile,name})=>{if(!['terminal','crawler'].includes(profile))throw Error('Choose terminal or crawler');const gatewayInfo=await startGateway(),client=clients.createProfile(name||('My '+profile+' AI'),profile),s=core.settings();s.clientPolicies[client.id]=Object.fromEntries(Object.keys(s.permissions).map(key=>[key,key===(profile==='terminal'?'terminal':'crawl')?'ask':'deny']));s.clientExecution[client.id]='background';core.saveSettings(s);const url=new URL(tunnel.status().phase==='online'?tunnel.status().url:gatewayInfo.url);url.pathname='/'+profile+'/mcp';emit('clients',clients.list());return{...client,profile,url:url.href,warning:'Keep this credential private. New actions require your approval.'};});
+
   ipc('snapshot',()=>runtime());
  ipc('settings:read',()=>core.settings());
  ipc('settings:save',s=>{const old=core.settings();const result=core.saveSettings(s);if(result.emergencyStop){approvals.cancelAll();core.processes.stopAll();core.crawlJobs.stopAll();}if(old.launchAtLogin!==result.launchAtLogin&&app.isPackaged){try{require('./startup.cjs').configureStartup(app,result.launchAtLogin,{remoteAutoConnect:remoteAutoConnect()});}catch(error){core.saveSettings(old);throw error;}}emit('settings',result);return result;});
@@ -295,7 +375,7 @@ if(process.argv.includes('--vortex-diagnostic')){
 
  ipc('setup:diagnostics',async()=>{await startGateway();const spec=clientSpec('Diagnostics');const proc=cp.spawn(spec.command,spec.args,{env:{...process.env,...spec.env},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{proc.kill();reject(Error('MCP diagnostic timed out'));},5000);proc.stdout.on('data',b=>stdout+=b);proc.stderr.on('data',b=>stderr+=b);proc.on('error',e=>{clearTimeout(timer);reject(e);});proc.on('close',()=>{clearTimeout(timer);try{const r=JSON.parse(stdout.trim().split('\n')[0]);if(!r.result?.serverInfo)throw Error(r.error?.message||stderr||'MCP handshake failed');resolve({ok:true,version:r.result.serverInfo.version});}catch(e){reject(e);}});proc.stdin.end(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'Diagnostics',version:'1'}}})+'\n');});});
  ipc('gateway:start',()=>startGateway());ipc('gateway:status',()=>({running:!!gateway,url:gateway?.url}));
- ipc('gateway:stop',async()=>{approvals.cancelAll('Gateway stopped');core.processes.stopAll();core.crawlJobs.stopAll();tunnel.stop();if(gateway){await gateway.stop();gateway=null;}try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}return {running:false};});
+ ipc('gateway:stop',async()=>{await shutDownGateway();return {running:false};});
  ipc('remote:mode:read',()=>tunnel.config()||{mode:'temporary',autoConnect:remoteAutoConnect()});
  ipc('remote:mode:save',cfg=>{
    const next=validateRemoteConfig(cfg);
@@ -353,5 +433,5 @@ if(process.argv.includes('--vortex-diagnostic')){
  });
  ipc('vortex:chat',(messages,model)=>vortex.chat(readSecret('vortex-key'),messages,model||vortex.DEFAULT_MODEL,globalThis.fetch,vortexConfig()));ipc('vortex:disconnect',()=>{try{fs.unlinkSync(secretFile('vortex-key'));}catch{}return true;});
  app.on('activate',show);app.on('window-all-closed',()=>{if(process.platform!=='darwin'||!core.settings().keepRunning){quitting=true;app.quit();}});
- app.on('before-quit',()=>{quitting=true;approvals?.cancelAll('Bridge is quitting');core.processes.stopAll();core.crawlJobs.stopAll();tunnel?.stop();gateway?.server.closeAllConnections?.();gateway?.server.close();try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}});
+ app.on('before-quit',event=>{quitting=true;platformConnectionPending=false;platformConnectionEpoch++;approvals?.cancelAll('Bridge is quitting');core.processes.stopAll();core.crawlJobs.stopAll();tunnel?.stop();gateway?.server.closeAllConnections?.();gateway?.server.close();try{fs.unlinkSync(path.join(core.root,'runtime.json'));}catch{}if(workMeter&&!meterQuitSettled){event.preventDefault();if(meterQuitPending)return;meterQuitPending=true;let deadline;Promise.race([workMeter.stop(),new Promise(resolve=>{deadline=setTimeout(resolve,1500);})]).catch(()=>{}).finally(()=>{clearTimeout(deadline);meterQuitSettled=true;app.quit();});}});
 }

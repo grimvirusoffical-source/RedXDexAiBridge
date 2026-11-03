@@ -2,6 +2,7 @@ node_modules/
 dist/
 build/redxdex-control
 build/redxdex-control.exe
+build/redx-installer-theme.exe
 *.enc
 .env*
 *.p8
@@ -18,5 +19,4 @@ node_modules
 verification/
 ci-errors.log
 build/installer-theme/
-
-build/redx-installer-theme.exe
+services/bridge-platform/node_modules/

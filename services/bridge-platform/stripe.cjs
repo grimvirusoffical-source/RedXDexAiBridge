@@ -1,0 +1,178 @@
+'use strict';
+const crypto=require('node:crypto'),{AsyncLocalStorage}=require('node:async_hooks'),{PlatformError}=require('./index.cjs');
+const reject=(code,status=503)=>{throw new PlatformError(code,status);},ref=x=>typeof x==='string'?x:x?.id;
+function createStripeBilling({client,platform,webhookSecret,webhookEndpointId,livemode=false,allowLive=false,prices={},portalConfiguration,allowInlinePricesForTests=false,now=Date.now}={}){
+ if(!client||!platform?.withBillingState)throw Error('Stripe instance and durable ledger required');
+ if(typeof client.bridgeLivemode==='boolean'&&client.bridgeLivemode!==livemode)throw Error('Stripe credential mode mismatch');
+ if(livemode&&!allowLive)throw Error('Live checkout is not enabled');
+ const processing=new AsyncLocalStorage(),proof=()=>({verified:true,...(processing.getStore()?{billingFence:processing.getStore()}:{})});
+ const state=fn=>platform.withBillingState(b=>{const fence=processing.getStore();if(fence&&(b.processing?.token!==fence||b.processing.untilMs<=now()))reject('payment_processing_fence_expired',503);b.orders??={};b.customers??={};b.subscriptions??={};return fn(b);});
+ const providerQueue=[],PROVIDER_QUEUE_LIMIT=64,PROVIDER_QUEUE_WAIT_MS=25000;let providerActive=false,activeFence=null;
+ const queuedCheck=entry=>{if(entry.signal?.aborted)reject('payment_processing_cancelled',503);if(now()>=entry.deadlineMs)reject('payment_processing_busy',503);};
+ async function providerTask(entry){
+  const token=crypto.randomBytes(24).toString('hex');
+  const untilMs=await state(b=>{queuedCheck(entry);if(b.processing?.untilMs>now())reject('payment_processing_busy',503);const untilMs=now()+300000;b.processing={token,untilMs};return untilMs;});
+  activeFence={token,untilMs};
+  try{queuedCheck(entry);return await processing.run(token,entry.fn);}
+  finally{activeFence=null;await processing.run(null,()=>state(b=>{if(b.processing?.token===token)delete b.processing;}));}
+ }
+ function drainProviderQueue(){
+  if(providerActive)return;
+  while(providerQueue.length){
+   const entry=providerQueue.shift();entry.detach();
+   try{queuedCheck(entry);}catch(error){entry.reject(error);continue;}
+   providerActive=true;
+   // Never inherit an old worker's AsyncLocalStorage token into another job.
+   processing.run(null,()=>providerTask(entry)).then(entry.resolve,entry.reject).finally(()=>{providerActive=false;drainProviderQueue();});return;
+  }
+ }
+ function withProviderLock(fn,{signal}={}){
+  const inherited=processing.getStore();
+  if(inherited){if(activeFence?.token!==inherited||activeFence.untilMs<=now())return Promise.reject(new PlatformError('payment_processing_fence_expired',503));return Promise.resolve().then(()=>{if(activeFence?.token!==inherited||activeFence.untilMs<=now())reject('payment_processing_fence_expired',503);return fn();});}
+  if(signal?.aborted)return Promise.reject(new PlatformError('payment_processing_cancelled',503));
+  if(providerQueue.length+(providerActive?1:0)>=PROVIDER_QUEUE_LIMIT)return Promise.reject(new PlatformError('payment_processing_busy',503));
+  return new Promise((resolve,rejectPromise)=>{
+   const entry={fn,signal,resolve,reject:rejectPromise,deadlineMs:now()+PROVIDER_QUEUE_WAIT_MS};let timer;
+   const cancel=code=>{const index=providerQueue.indexOf(entry);if(index<0)return;providerQueue.splice(index,1);entry.detach();rejectPromise(new PlatformError(code,503));};
+   const aborted=()=>cancel('payment_processing_cancelled');
+   entry.detach=()=>{clearTimeout(timer);signal?.removeEventListener('abort',aborted);};
+   timer=setTimeout(()=>cancel('payment_processing_busy'),PROVIDER_QUEUE_WAIT_MS);timer.unref?.();signal?.addEventListener('abort',aborted,{once:true});
+   providerQueue.push(entry);drainProviderQueue();
+  });
+ }
+ const pricing=require('./stripe-prices.cjs').createPriceVerifier({client,prices,livemode,allowInlinePricesForTests});
+ const period=s=>(s.current_period_end??s.items?.data?.[0]?.current_period_end??0)*1000;
+ async function create(actor,orderId){
+  await platform.authorizePurchase(actor);if(!webhookSecret)reject('webhook_unconfigured');
+  const o=await platform.getOrder(orderId);if(!o||o.sub!==actor.sub||o.deviceId!==actor.deviceId||o.fulfilled||o.expiresMs<=now())reject('checkout_order_unavailable',409);
+  if(o.kind==='subscription')await portalConfig();
+  const selectedPrice=await pricing.prepare(o);
+  const integrationIdentifier=await state(b=>{b.orders[o.id]??={};b.orders[o.id].integrationIdentifier??='redxai_bridge_'+Array.from(crypto.randomBytes(8),n=>String.fromCharCode(97+n%26)).join('');return b.orders[o.id].integrationIdentifier;});
+  let customer=await state(b=>b.customers[o.sub]);if(!customer){const c=await client.customers.create({metadata:{redx_subject:o.sub,redx_app:'bridge'}},{idempotencyKey:'bridge-customer:'+crypto.createHash('sha256').update(o.sub).digest('hex')});customer=c.id;await state(b=>{b.customers[o.sub]=customer;});}
+  const checkoutExpiresAt=o.kind==='subscription'?await reserveSubscription(o,customer):null;
+  const metadata={redx_order:o.id,redx_subject:o.sub,redx_device:o.deviceId,redx_kind:o.kind,redx_sku:o.sku},recurring=o.kind==='subscription';
+  const session=await client.checkout.sessions.create({mode:recurring?'subscription':'payment',customer,client_reference_id:o.id,metadata,line_items:[selectedPrice.line],...(checkoutExpiresAt?{expires_at:checkoutExpiresAt}:{}),...(recurring?{subscription_data:{metadata}}:{payment_intent_data:{metadata}}),success_url:'https://red-xai.com/redxai-connect/developer',cancel_url:'https://red-xai.com/redxai-connect/developer',adaptive_pricing:{enabled:false},integration_identifier:integrationIdentifier},{idempotencyKey:'bridge-checkout:'+o.id});
+  if(session.livemode!==livemode)reject('stripe_mode_mismatch');const u=new URL(session.url);if(u.protocol!=='https:'||u.hostname!=='checkout.stripe.com')reject('checkout_url_invalid');
+  await state(b=>{if(b.orders[o.id]?.sessionId&&b.orders[o.id].sessionId!==session.id)reject('checkout_session_changed',409);b.orders[o.id]={...b.orders[o.id],sessionId:session.id,sub:o.sub,deviceId:o.deviceId,customerId:customer,orderId:o.id,kind:o.kind,sku:o.sku,pricing:selectedPrice.binding};if(o.kind==='subscription')b.subscriptionReservations[o.sub]={...b.subscriptionReservations[o.sub],status:'open',sessionId:session.id,expiresMs:session.expires_at*1000};});return{url:u.href,orderId:o.id,mode:livemode?'live':'sandbox'};
+ }
+ async function reserveSubscription(o,customer){
+  const bound=await state(b=>Object.entries(b.subscriptions).filter(([,v])=>v.sub===o.sub).map(([id])=>id));
+  for(const id of bound){const sub=await client.subscriptions.retrieve(id);if(sub.livemode!==livemode||ref(sub.customer)!==customer)reject('subscription_binding_mismatch',409);if(!['canceled','incomplete_expired'].includes(sub.status))reject('manage_subscription_in_portal',409);}
+  if(typeof client.subscriptions.list!=='function')reject('subscription_lookup_unavailable');
+  const listed=await client.subscriptions.list({customer,status:'all',limit:100});if(listed.has_more)reject('subscription_lookup_incomplete');const knownPrices=new Set(Object.values(pricing.catalog).map(v=>v.price));
+  for(const sub of listed.data||[]){if(sub.livemode!==livemode||ref(sub.customer)!==customer)reject('subscription_binding_mismatch',409);const ours=sub.metadata?.redx_subject===o.sub||(sub.items?.data||[]).some(i=>knownPrices.has(ref(i.price)));if(ours&&!['canceled','incomplete_expired'].includes(sub.status))reject('manage_subscription_in_portal',409);}
+  const prior=await state(b=>b.subscriptionReservations?.[o.sub]);
+  if(prior&&['creating','open'].includes(prior.status)&&prior.orderId!==o.id&&prior.expiresMs<=now()&&prior.sessionId){let session=await client.checkout.sessions.retrieve(prior.sessionId);if(session.status==='open'&&session.expires_at*1000<=now()){if(typeof client.checkout.sessions.expire!=='function')reject('pending_checkout_expiry_unverified');session=await client.checkout.sessions.expire(session.id);}if(session.status!=='expired')reject('subscription_checkout_in_progress',409);}
+  return state(b=>{b.subscriptionReservations??={};const current=b.subscriptionReservations[o.sub];if(current&&['creating','open'].includes(current.status)&&current.orderId!==o.id&&current.expiresMs>now())reject('subscription_checkout_in_progress',409);if(current?.orderId===o.id&&['creating','open'].includes(current.status))return current.expiresAt;const expiresAt=Math.floor(now()/1000)+31*60;b.subscriptionReservations[o.sub]={orderId:o.id,status:'creating',expiresAt,expiresMs:expiresAt*1000,customerId:customer};return expiresAt;});
+ }
+ async function fulfill(sessionId,eventId){
+  const s=await client.checkout.sessions.retrieve(sessionId,{expand:['line_items','subscription']});if(s.livemode!==livemode)reject('stripe_mode_mismatch',400);if(s.payment_status!=='paid')return{pending:true};
+  const o=await platform.getOrder(s.client_reference_id);if(!o)reject('unknown_checkout_order',409);const binding=await state(b=>b.orders[o.id]);
+  if(!binding||binding.sessionId!==s.id||ref(s.customer)!==binding.customerId||s.metadata?.redx_order!==o.id||s.metadata?.redx_subject!==o.sub||s.metadata?.redx_device!==o.deviceId||s.currency!=='usd'||s.amount_total!==o.amountCents)reject('checkout_binding_mismatch',409);
+  await pricing.verify(s,o,binding.pricing);
+  const sub=typeof s.subscription==='string'?await client.subscriptions.retrieve(s.subscription):s.subscription;
+  if(sub&&(sub.livemode!==livemode||ref(sub.customer)!==binding.customerId||sub.metadata?.redx_order!==o.id||sub.metadata?.redx_subject!==o.sub||sub.metadata?.redx_sku!==o.sku||!['active','trialing'].includes(sub.status)))reject('subscription_binding_mismatch',409);
+  const result=await platform.applyPayment({...proof(),paid:true,eventId,checkoutSessionId:s.id,orderId:o.id,sub:o.sub,deviceId:o.deviceId,amountCents:s.amount_total,currency:s.currency,...(sub?{subscriptionId:sub.id,periodEndMs:period(sub)}:{})});
+  await state(b=>{if(sub)b.subscriptions[sub.id]={sub:o.sub,tier:o.sku,customerId:binding.customerId};if(sub){b.orders[o.id].subscriptionId=sub.id;if(b.subscriptionReservations?.[o.sub]?.orderId===o.id)b.subscriptionReservations[o.sub].status='completed';}b.orders[o.id].paymentIntent=ref(s.payment_intent)||null;});return result;
+ }
+ const eventKey=(eventId,receipt)=>'evt_'+crypto.createHash('sha256').update(eventId+':'+receipt).digest('hex');
+ const positiveInt=n=>Number.isSafeInteger(n)&&n>0;
+ async function catalogTier(priceId){const found=Object.entries(pricing.catalog).find(([,v])=>v.price===priceId);if(!found)reject('subscription_price_unrecognized',409);const [tier,item]=found;const p=await client.prices.retrieve(priceId,{expand:['product']});if(p.livemode!==livemode||p.currency!=='usd'||ref(p.product)!==item.product||p.unit_amount!==item.amountCents||p.recurring?.interval!=='month'||(p.recurring.interval_count??1)!==1)reject('subscription_price_mismatch',409);return tier;}
+ async function currentSubscription(id){const binding=await state(b=>b.subscriptions[id]),s=await client.subscriptions.retrieve(id);if(!binding){if(s.metadata?.redx_order)reject('subscription_binding_missing',503);return null;}if(s.livemode!==livemode||ref(s.customer)!==binding.customerId||s.metadata?.redx_subject!==binding.sub)reject('subscription_binding_mismatch',409);let tier=binding.tier;if(s.items?.data){if(s.items.has_more||s.items.data.length!==1||s.items.data[0].quantity!==1)reject('subscription_items_mismatch',409);tier=await catalogTier(ref(s.items.data[0].price));}else if(!allowInlinePricesForTests)reject('subscription_items_missing',503);if(tier!==binding.tier)await state(b=>{b.subscriptions[id].tier=tier;});return{binding:{...binding,tier},s};}
+ async function sync(id,eventId){const current=await currentSubscription(id);if(!current)return{ignored:true,reason:'unrelated_subscription'};const {binding,s}=current;return platform.syncSubscription({...proof(),eventId:eventKey(eventId,s.status+':'+period(s)+':'+binding.tier),sub:binding.sub,subscriptionId:id,status:s.status,periodEndMs:period(s),tier:binding.tier});}
+ async function listInvoicePayments(params){if(typeof client.invoicePayments?.list!=='function')reject('invoice_payment_lookup_unavailable');let cursor,all=[];for(let page=0;page<100;page++){const result=await client.invoicePayments.list({...params,status:'paid',limit:100,...(cursor?{starting_after:cursor}:{})});if(!Array.isArray(result.data)||result.has_more&&(!result.data.length||result.data.at(-1).id===cursor))reject('invoice_payment_lookup_incomplete');all.push(...result.data);if(!result.has_more)return all;cursor=result.data.at(-1).id;}reject('invoice_payment_lookup_incomplete');}
+ async function invoice(invoiceId,eventId){
+  if(typeof client.invoices?.retrieve!=='function')reject('invoice_lookup_unavailable');const inv=await client.invoices.retrieve(invoiceId);if(inv.id!==invoiceId||inv.livemode!==livemode||inv.currency!=='usd')reject('invoice_binding_mismatch',409);
+  const subscriptionId=ref(inv.parent?.subscription_details?.subscription)||ref(inv.subscription);if(!subscriptionId)return{ignored:true,reason:'unrelated_invoice'};const current=await currentSubscription(subscriptionId);if(!current)return{ignored:true,reason:'unrelated_subscription'};const {binding}=current;if(ref(inv.customer)!==binding.customerId)reject('invoice_binding_mismatch',409);
+  if(inv.status!=='paid')return sync(subscriptionId,eventId);const lines=inv.lines;if(!lines||lines.has_more||lines.data?.length!==1)reject('invoice_line_items_unsupported',503);const line=lines.data[0],details=line.parent?.subscription_item_details;
+  if(line.livemode!==livemode||line.currency!=='usd'||line.quantity!==1||ref(details?.subscription)!==subscriptionId||details.proration||!positiveInt(line.period?.end)||line.period.end<line.period.start)reject('invoice_line_binding_mismatch',409);
+  const priceId=ref(line.pricing?.price_details?.price),tier=await catalogTier(priceId),catalog=pricing.catalog[tier];if(line.amount!==catalog.amountCents||inv.total!==catalog.amountCents||!Number.isSafeInteger(inv.amount_paid)||inv.amount_paid<0)reject('invoice_amount_mismatch',409);
+  const payments=await listInvoicePayments({invoice:inv.id});let allocated=0;
+  for(const p of payments){if(p.livemode!==livemode||p.currency!=='usd'||p.status!=='paid'||ref(p.invoice)!==inv.id||!positiveInt(p.amount_paid)||p.payment?.type!=='payment_intent'||!ref(p.payment.payment_intent))reject('invoice_payment_binding_mismatch',409);allocated+=p.amount_paid;}
+  if(!Number.isSafeInteger(allocated)||allocated!==inv.amount_paid)reject('invoice_payment_allocation_mismatch',503);
+  for(const p of payments){
+   const piId=ref(p.payment.payment_intent),pi=await client.paymentIntents.retrieve(piId,{expand:['latest_charge']});if(pi.id!==piId||pi.livemode!==livemode||pi.currency!=='usd'||ref(pi.customer)!==binding.customerId||pi.status!=='succeeded'||!positiveInt(pi.amount_received)||pi.amount_received<p.amount_paid)reject('invoice_payment_intent_mismatch',409);
+   // The initial invoice is the same purchase as Checkout, not a second receipt.
+   const original=inv.billing_reason==='subscription_create'?await state(b=>Object.values(b.orders).find(v=>v.subscriptionId===subscriptionId&&v.orderId===current.s.metadata?.redx_order)):null;
+   if(original&&payments.length===1){const order=await platform.getOrder(original.orderId);if(order.amountCents!==p.amount_paid)reject('initial_invoice_amount_mismatch',409);await state(b=>{const o=b.orders[original.orderId];if(o.paymentIntent&&o.paymentIntent!==piId)reject('initial_invoice_payment_changed',409);o.paymentIntent=piId;o.invoicePaymentId=p.id;o.invoiceId=inv.id;});continue;}
+   await platform.recordInvoicePayment({...proof(),receiptId:p.id,invoiceId:inv.id,sub:binding.sub,subscriptionId,tier,amountCents:p.amount_paid,periodEndMs:line.period.end*1000,currency:'usd'});
+   const receipt={sessionId:p.id,orderId:p.id,sub:binding.sub,customerId:binding.customerId,subscriptionId,kind:'subscription',sku:tier,paymentIntent:piId,invoicePaymentId:p.id,invoiceId:inv.id};
+   await state(b=>{b.invoiceReceipts??={};const prior=b.invoiceReceipts[p.id];if(prior&&JSON.stringify(prior)!==JSON.stringify(receipt))reject('invoice_payment_changed',409);b.invoiceReceipts[p.id]=receipt;});
+  }
+  return sync(subscriptionId,eventId);
+ }
+ async function paymentBindings(paymentIntent,{discoverInvoices=true}={}){
+  let bindings=await state(b=>[...Object.values(b.orders),...Object.values(b.invoiceReceipts||{})].filter(v=>v.paymentIntent===paymentIntent));
+  // A reversal can arrive before invoice.paid. Discover the current provider's
+  // invoice allocations so webhook ordering never silently drops a renewal.
+  if(discoverInvoices&&typeof client.invoicePayments?.list==='function'){const allocations=await listInvoicePayments({payment:{type:'payment_intent',payment_intent:paymentIntent}});for(const p of allocations)await invoice(ref(p.invoice),eventKey('discover_'+p.id,paymentIntent));bindings=await state(b=>[...Object.values(b.orders),...Object.values(b.invoiceReceipts||{})].filter(v=>v.paymentIntent===paymentIntent));}
+  if(!bindings.length)reject('payment_binding_missing',503);const pi=await client.paymentIntents.retrieve(paymentIntent,{expand:['latest_charge']});if(pi.id!==paymentIntent||pi.livemode!==livemode||pi.currency!=='usd'||pi.status!=='succeeded'||bindings.some(v=>ref(pi.customer)!==v.customerId))reject('payment_binding_mismatch',409);
+  const receipts=[];for(const binding of bindings){const order=await platform.getOrder(binding.orderId);if(!order)reject('payment_order_missing',503);receipts.push({binding,order});}const amount=pi.amount_received??(allowInlinePricesForTests?receipts.reduce((sum,r)=>sum+r.order.amountCents,0):null);if(!positiveInt(amount)||receipts.reduce((sum,r)=>sum+r.order.amountCents,0)>amount)reject('payment_allocation_mismatch',409);return{receipts,pi,amount};
+ }
+ const allocated=(total,part,whole)=>Number(BigInt(total)*BigInt(part)/BigInt(whole));
+ async function refund(charge,eventId){const {receipts,pi,amount}=await paymentBindings(ref(charge.payment_intent)),current=pi.latest_charge;if(!current||typeof current!=='object'||current.id!==charge.id||current.livemode!==livemode||current.currency!=='usd'||ref(current.payment_intent)!==pi.id||!Number.isSafeInteger(current.amount_refunded)||current.amount_refunded<0||current.amount_refunded>amount)reject('refund_binding_mismatch',409);const results=[];for(const {binding,order}of receipts){const total=allocated(current.amount_refunded,order.amountCents,amount);results.push(await platform.applyRefund({...proof(),eventId:eventKey(eventId,binding.sessionId+':refund:'+current.amount_refunded),checkoutSessionId:binding.sessionId,totalRefundedCents:total}));if(order.kind==='subscription'&&total===order.amountCents&&(!order.periodEndMs||order.periodEndMs>now()))await cancelForReversal(binding,order,eventId);}return results.length===1?results[0]:{allocations:results};}
+ async function dispute(disputeId,eventId){
+  const d=await client.disputes.retrieve(disputeId,{expand:['charge']});if(d.id!==disputeId||d.livemode!==livemode||d.currency!=='usd')reject('dispute_binding_mismatch',409);
+  const paymentIntent=ref(d.payment_intent)||ref(d.charge?.payment_intent),{receipts,pi,amount}=await paymentBindings(paymentIntent);if(ref(pi.latest_charge)!==ref(d.charge)||!positiveInt(d.amount)||d.amount>amount)reject('dispute_charge_mismatch',409);
+  const results=[];for(const {binding,order}of receipts){const part=allocated(d.amount,order.amountCents,amount);results.push(await platform.applyDispute({...proof(),eventId:eventKey(eventId,binding.sessionId+':dispute:'+d.status+':'+d.amount),checkoutSessionId:binding.sessionId,disputeId:'dp_'+crypto.createHash('sha256').update(d.id+':'+binding.sessionId).digest('hex'),status:d.status,amountCents:part}));if(order.kind==='subscription'&&d.status==='lost'&&part&&(!order.periodEndMs||order.periodEndMs>now()))await cancelForReversal(binding,order,eventId);}return results.length===1?results[0]:{allocations:results};
+ }
+ async function fraudWarning(warningId,eventId){
+  if(!/^issfr_[A-Za-z0-9_]+$/.test(warningId||'')||typeof client.radar?.earlyFraudWarnings?.retrieve!=='function'||typeof platform.recordFraudWarning!=='function')reject('fraud_warning_lookup_unavailable');
+  const warning=await client.radar.earlyFraudWarnings.retrieve(warningId,{expand:['charge']});
+  if(warning?.id!==warningId||warning.object!=='radar.early_fraud_warning'||warning.livemode!==livemode||typeof warning.actionable!=='boolean'||!positiveInt(warning.created)||!Number.isSafeInteger(warning.created*1000))reject('fraud_warning_binding_mismatch',409);
+  const chargeId=ref(warning.charge);let charge=warning.charge;
+  if(typeof charge==='string'){if(typeof client.charges?.retrieve!=='function')reject('fraud_warning_charge_lookup_unavailable');charge=await client.charges.retrieve(chargeId);}
+  const paymentIntent=ref(warning.payment_intent)||ref(charge?.payment_intent);
+  if(!chargeId||charge?.id!==chargeId||charge.livemode!==livemode||charge.currency!=='usd'||!paymentIntent||ref(charge.payment_intent)!==paymentIntent)reject('fraud_warning_charge_mismatch',409);
+  const {receipts,pi}=await paymentBindings(paymentIntent,{discoverInvoices:false});
+  if(ref(pi.latest_charge)!==chargeId)reject('fraud_warning_charge_mismatch',409);
+  // A warning is a review signal, not a dispute or authority to issue a refund.
+  // Record only references to verified Bridge receipts; never trust event fields.
+  return platform.recordFraudWarning({...proof(),eventId,warningId,chargeId,paymentIntentId:paymentIntent,orderIds:receipts.map(({order})=>order.id),actionable:warning.actionable,createdAtMs:warning.created*1000});
+ }
+ async function asyncFailed(sessionId,eventId){const session=await client.checkout.sessions.retrieve(sessionId);if(session.livemode!==livemode)reject('stripe_mode_mismatch',400);const binding=await state(b=>b.orders[session.client_reference_id]);if(!binding||binding.sessionId!==session.id||ref(session.customer)!==binding.customerId)reject('checkout_binding_mismatch',409);if(session.payment_status==='paid')return fulfill(session.id,eventId);await state(b=>{b.orders[session.client_reference_id].paymentFailedMs=now();});return{paymentFailed:true};}
+ async function cancelSubscription(actor,{sub,subscriptionId,requestId}){
+  if(!/^sub_[A-Za-z0-9_]{1,120}$/.test(subscriptionId||'')||!/^(?:[A-Za-z0-9_-]{3,128}|delete:[a-f0-9]{64})$/.test(requestId||''))reject('subscription_cancellation_request_invalid',400);
+  const binding=await state(b=>b.subscriptions[subscriptionId]);if(!binding||binding.sub!==sub)reject('subscription_binding_missing',409);
+  if(actor.sub!==sub){const me=await platform.dispatch(actor,'/me');if(!me.capabilities?.admin||!actor.mfaUsed||now()-actor.reauthAtMs>600000)reject('moderator_required',403);}
+  let current=await client.subscriptions.retrieve(subscriptionId);if(current.id!==subscriptionId||current.livemode!==livemode||ref(current.customer)!==binding.customerId)reject('subscription_binding_mismatch',409);
+  if(current.status!=='canceled'){await client.subscriptions.cancel(subscriptionId,{invoice_now:false,prorate:false},{idempotencyKey:'bridge-cancel:'+requestId});current=await client.subscriptions.retrieve(subscriptionId);}
+  if(current.id!==subscriptionId||current.status!=='canceled'||current.livemode!==livemode||ref(current.customer)!==binding.customerId)reject('subscription_cancellation_incomplete',503);
+  await platform.syncSubscription({...proof(),eventId:'evt_local_cancel_'+crypto.createHash('sha256').update(subscriptionId+':'+requestId).digest('hex'),sub,subscriptionId,status:'canceled',periodEndMs:period(current),tier:binding.tier});
+  return{verified:true,completed:true,ok:true,scope:'bridge',action:'cancel-subscription',sub,subscriptionId,requestId,status:'canceled'};
+ }
+ async function cancelForReversal(binding,order,eventId){const id=binding.subscriptionId||order.subscriptionId;if(!id)reject('subscription_binding_missing',503);let sub=await client.subscriptions.retrieve(id);if(sub.id!==id||sub.livemode!==livemode||ref(sub.customer)!==binding.customerId)reject('subscription_binding_mismatch',409);if(sub.status!=='canceled'){await client.subscriptions.cancel(id,{invoice_now:false,prorate:false});sub=await client.subscriptions.retrieve(id);}if(sub.id!==id||sub.status!=='canceled'||sub.livemode!==livemode||ref(sub.customer)!==binding.customerId)reject('subscription_cancellation_incomplete',503);await platform.syncSubscription({...proof(),eventId:'evt_reversal_cancel_'+crypto.createHash('sha256').update(eventId+id).digest('hex'),sub:order.sub,subscriptionId:id,status:'canceled',periodEndMs:period(sub),tier:order.sku});}
+ async function processEvent(e){
+  if(e.livemode!==livemode)reject('stripe_mode_mismatch',400);const o=e.data?.object;if(!o||typeof e.id!=='string')reject('stripe_event_invalid',400);
+  if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(e.type))return fulfill(o.id,e.id);
+  if(['customer.subscription.updated','customer.subscription.deleted'].includes(e.type))return sync(o.id,e.id);
+  if(['invoice.paid','invoice.payment_failed'].includes(e.type))return invoice(o.id,e.id);
+  if(e.type==='charge.refunded')return refund(o,e.id);
+  if(['charge.dispute.created','charge.dispute.updated','charge.dispute.closed'].includes(e.type))return dispute(o.id,e.id);
+  if(e.type==='radar.early_fraud_warning.created')return fraudWarning(o.id,e.id);
+  if(e.type==='checkout.session.async_payment_failed')return asyncFailed(o.id,e.id);
+  return{ignored:true};
+ }
+ async function portalConfig(){
+  if(!/^bpc_[A-Za-z0-9]+$/.test(portalConfiguration||'')||typeof client.billingPortal?.configurations?.retrieve!=='function')reject('billing_portal_unconfigured');
+  const c=await client.billingPortal.configurations.retrieve(portalConfiguration),f=c.features;
+  if(c.id!==portalConfiguration||c.active!==true||c.livemode!==livemode||c.metadata?.redx_app!=='bridge'||c.metadata?.redx_scope!=='cancel_payment_methods_v1'||c.default_return_url!=='https://red-xai.com/redxai-connect/developer'||c.login_page?.enabled!==false||!f||f.payment_method_update?.enabled!==true||f.subscription_cancel?.enabled!==true||f.subscription_cancel.mode!=='at_period_end'||f.subscription_cancel.proration_behavior!=='none'||f.subscription_cancel.retention_options?.coupons?.length||f.subscription_update?.enabled!==false||f.customer_update?.enabled!==false||f.invoice_history?.enabled!==false)reject('billing_portal_configuration_unsafe');
+  for(const [name,value]of Object.entries(f))if(!['payment_method_update','subscription_cancel'].includes(name)&&value?.enabled!==false)reject('billing_portal_configuration_unsafe');
+  return c.id;
+ }
+ async function portal(actor){const customer=await state(b=>b.customers[actor.sub]);if(!customer)reject('billing_customer_not_found',404);const configuration=await portalConfig(),p=await client.billingPortal.sessions.create({customer,configuration,return_url:'https://red-xai.com/redxai-connect/developer'});if(ref(p.configuration)!==configuration||ref(p.customer)!==customer)reject('billing_portal_configuration_changed');if(p.livemode!==livemode)reject('stripe_mode_mismatch');const u=new URL(p.url);if(u.protocol!=='https:'||u.hostname!=='billing.stripe.com')reject('billing_portal_url_invalid');return{url:u.href};}
+ const webhookFingerprint=()=>crypto.createHash('sha256').update(webhookSecret||'').digest('hex');
+ async function verifyReadiness(){
+  const result={mode:livemode?'live':'sandbox',catalogVerified:false,portalVerified:false,webhookVerified:false};
+  try{const {TIERS}=require('./catalog.cjs');await Promise.all([...TIERS.filter(t=>t.monthlyCents>0).map(tier=>pricing.prepare({kind:'subscription',sku:tier.id,amountCents:tier.monthlyCents})),pricing.prepare({kind:'plugin',sku:'workflow-checkpoints',amountCents:399}),pricing.prepare({kind:'credits',sku:'credits',amountCents:501})]);result.catalogVerified=!allowInlinePricesForTests;}catch{}
+  try{await portalConfig();result.portalVerified=true;}catch{}
+  try{if(!/^we_[A-Za-z0-9]+$/.test(webhookEndpointId||'')||!webhookSecret||typeof platform.getBillingState!=='function')return result;const endpoint=await client.webhookEndpoints.retrieve(webhookEndpointId),proof=(await platform.getBillingState()).webhookProof,version=client.getApiField('version');const required=['checkout.session.completed','checkout.session.async_payment_succeeded','checkout.session.async_payment_failed','customer.subscription.updated','customer.subscription.deleted','invoice.paid','invoice.payment_failed','charge.refunded','charge.dispute.created','charge.dispute.updated','charge.dispute.closed','radar.early_fraud_warning.created'];result.webhookVerified=endpoint.id===webhookEndpointId&&endpoint.status==='enabled'&&endpoint.livemode===livemode&&endpoint.url==='https://red-xai.com/redxai-bridge/api/stripe/webhook'&&typeof version==='string'&&endpoint.api_version===version&&Array.isArray(endpoint.enabled_events)&&required.every(type=>endpoint.enabled_events.includes(type)||endpoint.enabled_events.includes('*'))&&proof?.endpointId===webhookEndpointId&&proof.mode===result.mode&&proof.fingerprint===webhookFingerprint()&&Number.isSafeInteger(proof.receivedMs)&&proof.receivedMs>0&&proof.receivedMs<=now();}catch{}
+  return result;
+ }
+ async function rawWebhook(req,res){let size=0;const chunks=[],controller=new AbortController(),closed=()=>{if(res.writableEnded!==true)controller.abort();};res.once?.('close',closed);try{for await(const b of req){size+=b.length;if(size>1048576)reject('webhook_too_large',413);chunks.push(b);}if(!webhookSecret)reject('webhook_unconfigured');let verified;try{verified=client.webhooks.constructEvent(Buffer.concat(chunks),req.headers['stripe-signature'],webhookSecret);}catch{reject('webhook_signature_invalid',400);}const result=await event(verified,{signal:controller.signal});await state(b=>{b.webhookProof={endpointId:webhookEndpointId||null,mode:livemode?'live':'sandbox',fingerprint:webhookFingerprint(),receivedMs:now()};});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));}catch(e){if(res.destroyed)return;res.writeHead(e.status||503,{'content-type':'application/json'});res.end(JSON.stringify({error:e.code||'payment_event_unavailable'}));}finally{res.off?.('close',closed);}}
+ async function extraRoutes({route,actor,body}){if(route==='/checkout/create')return create(actor,body.orderId);if(route==='/billing/portal')return portal(actor);if(route==='/admin/stripe/status'){const me=await platform.dispatch(actor,'/me');if(!me.capabilities?.configureStripe)reject('owner_required',403);return{configured:true,mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret,dashboardUrl:livemode?'https://dashboard.stripe.com/':'https://dashboard.stripe.com/test/'};}}
+ const event=(e,options)=>withProviderLock(()=>processEvent(e),options);
+ return{create,portal,event,rawWebhook,extraRoutes,verifyReadiness,cancelSubscription:async(...args)=>withProviderLock(()=>cancelSubscription(...args)),status:()=>({mode:livemode?'live':'sandbox',webhookConfigured:!!webhookSecret})};
+}
+function stripeClientFromEnvironment(env=process.env){const key=env.STRIPE_RESTRICTED_KEY;if(!/^(rk|sk)_(test|live)_/.test(key||''))throw Error('Server-side restricted Stripe credential is required');if(key.includes('_live_')&&env.BRIDGE_ENABLE_LIVE_PAYMENTS!=='yes')throw Error('Live payments are not enabled');const StripeClient=require('stripe');const client=new StripeClient(key,{maxNetworkRetries:2});Object.defineProperty(client,'bridgeLivemode',{value:key.includes('_live_')});return client;}
+module.exports={createStripeBilling,stripeClientFromEnvironment};

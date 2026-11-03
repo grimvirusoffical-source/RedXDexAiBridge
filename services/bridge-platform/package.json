@@ -1,0 +1,8 @@
+{
+  "name": "@red-xai/bridge-platform",
+  "version": "0.11.0",
+  "private": true,
+  "engines": {"node": ">=20"},
+  "scripts": {"start": "node server.cjs", "test": "node --test *.test.cjs"},
+  "dependencies": {"stripe": "23.1.0"}
+}
