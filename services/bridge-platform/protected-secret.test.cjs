@@ -67,6 +67,22 @@ test('Windows private intake respects execution policy and otherwise protects ne
  assert.equal(acl.protected,true);assert.equal(acl.rules.length,2);assert.deepEqual(acl.rules.map(rule=>rule.sid).sort(),[acl.owner,'S-1-5-18'].sort());for(const rule of acl.rules){assert.equal(rule.rights,2032127);assert.equal(rule.inherited,false);assert.equal(rule.type,'Allow');}
  const before=fs.readFileSync(file,'utf8');assert.throws(()=>cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],options));assert.equal(fs.readFileSync(file,'utf8'),before);
 }));
+test('Windows private intake detects the runtime when terminal environment omits OS',{skip:process.platform!=='win32'},t=>fixture(directory=>{
+ const cp=require('node:child_process'),file=path.join(directory,'runtime-only.dpapi'),script=path.resolve(__dirname,'../../scripts/save-bridge-sandbox-secret.ps1');
+ const env={...process.env,REDX_INTAKE_TEST_SCRIPT:script,REDX_INTAKE_TEST_FILE:file};delete env.OS;
+ const options={encoding:'utf8',windowsHide:true,timeout:10000,stdio:['ignore','pipe','pipe'],env};
+ const prefix="$ErrorActionPreference='Stop'; Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop; ";
+ const policy=cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',prefix+'Get-ExecutionPolicy'],options).trim();
+ const command=prefix+"[pscustomobject]@{version=$PSVersionTable.PSVersion.ToString();edition=$PSVersionTable.PSEdition;platform=[Environment]::OSVersion.Platform.ToString();osPresent=[bool]$env:OS} | ConvertTo-Json -Compress; function Read-Host { param($Prompt,[switch]$AsSecureString) throw 'Bridge fixture prompt reached' }; & $env:REDX_INTAKE_TEST_SCRIPT -Kind sandbox-api -Path $env:REDX_INTAKE_TEST_FILE -Account acct_fixtureSandbox";
+ let failure;try{cp.execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],options);}catch(error){failure=error;}
+ assert.ok(failure,'The fixture must stop before requesting or saving a credential');
+ const metadata=JSON.parse(String(failure.stdout).trim());assert.equal(metadata.osPresent,false);assert.equal(metadata.platform,'Win32NT');assert.match(metadata.version,/^\d+\.\d+/);assert.ok(['Desktop','Core'].includes(metadata.edition));
+ if(['Restricted','AllSigned'].includes(policy)){
+  assert.match(String(failure.stderr),/running scripts is disabled|not digitally signed/i);t.diagnostic('OS policy still refuses unsigned intake; no policy was changed.');
+ }else assert.match(String(failure.stderr),/Bridge fixture prompt reached/);
+ assert.equal(fs.existsSync(file),false);
+}));
+
 test('Unix files must be private, owned by the reader and restricted Sandbox keys',{skip:process.platform==='win32'},()=>fixture(directory=>{
  const file=path.join(directory,'sandbox.key');fs.writeFileSync(file,key,{mode:0o600});assert.equal(readSandboxKey(file,{expectedAccount:account}),key);
  fs.chmodSync(file,0o640);assert.throws(()=>readSandboxKey(file,{expectedAccount:account}));fs.chmodSync(file,0o600);
