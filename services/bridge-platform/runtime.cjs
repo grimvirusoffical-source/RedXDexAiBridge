@@ -1,7 +1,7 @@
 'use strict';
 const DEFAULT_PORT=17783,DEFAULT_SHUTDOWN_MS=30000;
 const MESSAGES=Object.freeze({
- listening:'Bridge platform listening on loopback with verified account integration',
+ listening:'Bridge platform listening on loopback',
  startupFailure:'Bridge platform configuration or account authority is not ready; no service started',
  stopped:'Bridge platform stopped',
  stopFailure:'Bridge platform could not stop cleanly',
