@@ -21,6 +21,8 @@ function instructionsForChatGPT(status) {
   '',
   'Update this existing plugin connection to use the endpoint above. Keep its plugin identity, OAuth authentication, permissions, and other settings unchanged. Do not create a duplicate plugin. Verify the new endpoint and tell me if OAuth reauthorization is required.',
   '',
+  'For native Codex compatibility, keep the portable mcp.json server declaration to its supported transport, URL and headers fields. Do not add server-level OpenAI extensions; use normal client OAuth discovery and approval.',
+  '',
   'This message contains the public endpoint address only, not an authentication token.'
  ].join('\n');
 }

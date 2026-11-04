@@ -113,3 +113,7 @@ For defects, include the operating system, application version, the relevant ope
 ## License and third-party notices
 
 The repository's package metadata currently declares `UNLICENSED`. Public access to its source does not itself grant redistribution or modification rights. See [Third-party notices](THIRD_PARTY_NOTICES.md) for dependencies and their licensing information.
+
+## Private plugin setup toolkit (0.1.9)
+
+The reusable [plugin setup toolkit](distribution/chatgpt-plugin/README.md) exports a native-compatible private connection for each owner's verified HTTPS endpoint. It verifies OAuth discovery, preserves existing output, and offers a config-only update mode so an existing plugin keeps its identity and permissions. No personal endpoint or credential is bundled. This is a public source/download toolkit, not an approved marketplace listing or a hosted multi-user gateway.
