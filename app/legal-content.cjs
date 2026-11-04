@@ -9,13 +9,13 @@ module.exports={
   refunds:{pluginRequestDays:14,whollyUnspentAxiomTopupRequestDays:14,firstSubscriptionChargeRequestDays:7},
   retention:{verifiedAccountDeletionDays:30,rawSecurityIpDays:30,hashedIpAssociationDays:90,endedBanDays:90,permanentBanReviewMonths:12,detailedUsageWeeks:8,recoveryMonths:13,auditMonths:12,supportAfterClosureMonths:12,backupPurgeGoalDays:30,minimalFinancialYears:7},
   exceptions:'Active bans, documented legal holds, financial obligations and applicable mandatory rights retain their draft qualifications.',
-  legalOperatorAndPublicAddress:'Not provided; owner requested none for now.',publicationReady:false},
- // Only the supplied contacts are final facts here. The proposed policies below
- // are not reviewed businessDetails and cannot satisfy deployment readiness.
+  legalOperatorAndPublicAddress:'Operator name separately supplied by owner: Red-XAI LLC. Public business contact address remains unprovided; full agreement approval is pending.',publicationReady:false},
+ // The operator name and contacts are owner-supplied, not independently verified
+ // formation evidence. The proposed policies below are not reviewed businessDetails.
  businessDetails:{
-  businessLabel:'Red-XAI LLC (Pending)',
+  businessLabel:'Red-XAI LLC',
   formationStatus:'Registration in progress in New Mexico, United States.',
-  legalName:null,supportContact:'support@infected-nation.com',privacyContact:'support@infected-nation.com',
+  legalName:'Red-XAI LLC',supportContact:'support@infected-nation.com',privacyContact:'support@infected-nation.com',
   refundPolicy:null,cancellationPolicy:null,jurisdiction:null,retentionPeriods:null,
   subprocessors:null,internationalTransfers:null,rightsProcess:null
  },
@@ -26,7 +26,7 @@ A purchased Bridge plugin activates on one enrolled device at a time. It is not 
 
 BUSINESS DETAILS AND DRAFT STATUS
 
-The owner-supplied business label is Red-XAI LLC (Pending). Registration is in progress in New Mexico, United States. This pending label does not confirm completed formation or identify a registered entity as the current legal operator. Support and privacy contact: support@infected-nation.com. The responsible legal operator, public business contact address and governing-law or venue terms still require confirmation before publication. The registration location is not a choice-of-law provision.
+The owner-supplied operator name for this draft is Red-XAI LLC. Registration was described as in progress in New Mexico, United States; completed formation has not been independently verified. Support and privacy contact: support@infected-nation.com. The public business contact address and governing-law or venue terms still require confirmation before publication. The registration location is not a choice-of-law provision.
 
 This version is a draft for review. The refund windows, cancellation terms and retention schedule below are proposed business policies whose final review and operational implementation are pending. They are not a statement that these policies are live, that a refund is automatically approved, or that the proposed cleanup deadlines have already been implemented. Mandatory rights under applicable law are unaffected by this draft.
 
@@ -62,14 +62,14 @@ Do not use Bridge to access a device, account or network without permission, def
 
 LIMITATIONS AND CONTACT
 
-Software and AI results can fail or be inaccurate. Keep independent backups and verify important results before relying on them. Bridge does not guarantee that an AI task is correct or that an external action can be undone. Nothing in these terms excludes rights or liabilities that applicable law does not permit to be excluded. Contact support@infected-nation.com with questions about this draft. The final responsible legal operator, public business details, applicable jurisdiction, approved refund and cancellation terms, and the corresponding operational processes must be confirmed before this version can be published or used to enable live paid sales.`},
+Software and AI results can fail or be inaccurate. Keep independent backups and verify important results before relying on them. Bridge does not guarantee that an AI task is correct or that an external action can be undone. Nothing in these terms excludes rights or liabilities that applicable law does not permit to be excluded. Contact support@infected-nation.com with questions about this draft. The remaining public business details for Red-XAI LLC, formation status, applicable jurisdiction, approved refund and cancellation terms, and the corresponding operational processes must be confirmed before this version can be published or used to enable live paid sales.`},
  {id:'privacy',title:'Privacy Policy',content:`WHAT BRIDGE PROCESSES
 
 Bridge uses your canonical Red-XAI account identifier and the profile fields needed for sign-in, purchases, subscriptions, moderation and support. Device enrollment records associate a public device identity with your account; private signing credentials remain in protected local storage. The account service records legal-acceptance versions and times, entitlement events, usage measurements and security audit records.
 
 BUSINESS AND PRIVACY CONTACT
 
-The owner-supplied business label is Red-XAI LLC (Pending), with registration in progress in New Mexico, United States. This is not confirmation of completed formation or the identity of the responsible legal operator or data controller. Support and privacy questions can be directed to support@infected-nation.com. The responsible legal name and public business contact address remain unresolved. This policy and the retention periods below are draft proposals for review; deployment and cleanup behavior must be verified before they are described as live practices.
+The owner-supplied operator name for this draft is Red-XAI LLC. Registration was described as in progress in New Mexico, United States; completed formation has not been independently verified. Support and privacy questions can be directed to support@infected-nation.com. The public business contact address remains unresolved. This policy and the retention periods below are draft proposals for review; deployment and cleanup behavior must be verified before they are described as live practices.
 
 YOUR COMPUTER AND CONNECTED AI CLIENTS
 
@@ -109,7 +109,7 @@ YOUR CHOICES AND PUBLISHED DETAILS
 
 You can review permissions, revoke clients, sign out and request the supported deletion scope. Privacy and access rights depend on the applicable law and the actual service operation. For questions or a proposed privacy request, contact support@infected-nation.com without sending passwords or MFA codes. A safe identity-verification and rights-request process, including applicable response periods, still needs confirmation.
 
-Before publication, the policy must identify the responsible data controller, complete subprocessors and processing locations, any applicable international-transfer arrangements, approved retention periods and the actual process for exercising rights. Stripe's payment processing is identified above, but this draft does not claim to supply a complete provider list, server region or transfer mechanism. This draft does not assert certifications, legal compliance or retention practices that have not been verified.`},
+Before publication, the policy must confirm the responsible data-controller role and public contact details for Red-XAI LLC, complete subprocessors and processing locations, any applicable international-transfer arrangements, approved retention periods and the actual process for exercising rights. Stripe's payment processing is identified above, but this draft does not claim to supply a complete provider list, server region or transfer mechanism. This draft does not assert certifications, legal compliance or retention practices that have not been verified.`},
  {id:'agreement',title:'User Agreement',content:`BEFORE CONNECTING AN AI
 
 Use Bridge only on computers and accounts you own or are authorized to operate. Sign-in verifies your Red-XAI account; it does not replace local operating-system consent or a client's separate pairing approval. Check each client's name, the requested operation, and the capabilities you grant. A terminal-only or crawler-only credential must not be treated as permission for full desktop control.
@@ -120,7 +120,7 @@ I understand that a paid plugin purchase is for one enrolled device at a time. I
 
 BUSINESS DETAILS AND REVIEW STATUS
 
-The business label supplied for this draft is Red-XAI LLC (Pending), with registration in progress in New Mexico, United States. This does not confirm completed formation or identify a registered legal operator. Support and privacy contact: support@infected-nation.com. The responsible legal operator, public business contact address and remaining publication details require confirmation. I understand that this is a review draft and that its proposed refund windows and retention periods are pending final review and operational implementation, rather than live guarantees.
+The owner-supplied operator name for this draft is Red-XAI LLC. Registration was described as in progress in New Mexico, United States; completed formation has not been independently verified. Support and privacy contact: support@infected-nation.com. The public business contact address and remaining publication details require confirmation. I understand that this is a review draft and that its proposed refund windows and retention periods are pending final review and operational implementation, rather than live guarantees.
 
 WORKING TIME AND BACKGROUND TASKS
 
