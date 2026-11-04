@@ -1,15 +1,17 @@
 'use strict';
 const crypto=require('node:crypto');
-const ORIGIN='https://red-xai.com',PREFIX='/redxai-bridge/api';
+const {ORIGIN,PREFIX,createReadinessProbe}=require('./platform-readiness.cjs');
 const ROUTE=/^\/[a-z][a-z0-9/-]{0,90}$/;
 const COOKIE_TOKEN=/^[A-Za-z0-9_~.+/-]{12,1024}={0,2}$/;
-const CANONICAL_COOKIE_DEFAULT=require('./platform-config.cjs').canonicalCookieTransport===true;
+const PLATFORM_CONFIG=require('./platform-config.cjs');
+const CANONICAL_COOKIE_DEFAULT=PLATFORM_CONFIG.canonicalCookieTransport===true;
 const canonicalSubject=value=>typeof value==='string'&&value.length>0&&value.length<=200&&!/[\s\p{Cc}]/u.test(value)&&!(value in Object.prototype)&&Buffer.from(value,'utf8').toString('utf8')===value;
 class PlatformClient {
- constructor({request=fetch,credentials,loadSecret,saveSecret,clearSecret,label='My computer',now=Date.now,canonicalCookieTransport=CANONICAL_COOKIE_DEFAULT}={}){
+ constructor({request=fetch,credentials,loadSecret,saveSecret,clearSecret,label='My computer',now=Date.now,canonicalCookieTransport=CANONICAL_COOKIE_DEFAULT,readinessRequired=PLATFORM_CONFIG.required===true,legalVersion=PLATFORM_CONFIG.legalVersion,readinessTimeoutMs=5000}={}){
   if(typeof credentials!=='function'||typeof loadSecret!=='function'||typeof saveSecret!=='function')throw Error('Private account and device storage are required');
-  Object.assign(this,{request,credentials,loadSecret,saveSecret,clearSecret,label,now});this.canonicalCookieTransport=canonicalCookieTransport===true;this.device=null;this.enrolling=null;this.state=null;
+  Object.assign(this,{request,credentials,loadSecret,saveSecret,clearSecret,label,now});this.canonicalCookieTransport=canonicalCookieTransport===true;this.readinessRequired=readinessRequired===true;this.probeReadiness=createReadinessProbe({request,legalVersion,timeoutMs:readinessTimeoutMs});this.device=null;this.enrolling=null;this.state=null;
  }
+ async readiness(){return this.probeReadiness();}
  async identity(){
   const c=await this.credentials();if(!c?.sub||!['quick','website','website-cookie'].includes(c.provider))throw Error('Sign in with your existing Red-XAI website account to use the shop');
   if(c.provider==='website-cookie'){
@@ -25,6 +27,7 @@ class PlatformClient {
  }
  async raw(route,data={}, {enroll=false,method='POST'}={}){
   if(!ROUTE.test(route)||route.includes('//')||route.includes('..'))throw Error('Invalid platform operation');
+  if(this.readinessRequired)await this.readiness();
   const account=await this.identity(),url=new URL(PREFIX+route,ORIGIN);if(method==='GET')for(const [key,value]of Object.entries(data))if(value!==undefined&&value!==null)url.searchParams.set(key,String(value));const body=method==='GET'?'':JSON.stringify(data);
   if(Buffer.byteLength(body)>7*1024*1024)throw Error('Platform request is too large');
   const headers={accept:'application/json',...(method==='GET'?{}:{'content-type':'application/json'})};
@@ -40,9 +43,9 @@ class PlatformClient {
   let value;try{value=JSON.parse(Buffer.concat(bytes).toString());}catch{throw Error('Invalid platform response');}
   if(!response.ok){const message=value.error==='banned'?(value.untilMs?'This account is banned until '+new Date(value.untilMs).toLocaleString():'This account is permanently banned'):(value.message||String(value.error||'Platform request refused'));const e=Error(message);e.code=value.error;e.status=response.status;e.details=value;throw e;}return value;
  }
- async enroll(){if(this.enrolling)return this.enrolling;this.enrolling=(async()=>{const d=await this.keys(),challenge=await this.raw('/device/challenge',{}, {enroll:true});if(typeof challenge.nonce!=='string'||challenge.nonce.length>256)throw Error('Invalid device challenge');const signature=crypto.sign(null,Buffer.from('bridge-enroll:'+challenge.nonce),d.privateKey).toString('base64url');const result=await this.raw('/device/enroll',{nonce:challenge.nonce,publicKey:d.publicKey,signature,label:this.label},{enroll:true});if(result.deviceId!==d.deviceId)throw Error('Server device identity did not match');return result;})().finally(()=>{this.enrolling=null;});return this.enrolling;}
+ async enroll(){if(this.readinessRequired)await this.readiness();if(this.enrolling)return this.enrolling;this.enrolling=(async()=>{const d=await this.keys(),challenge=await this.raw('/device/challenge',{}, {enroll:true});if(typeof challenge.nonce!=='string'||challenge.nonce.length>256)throw Error('Invalid device challenge');const signature=crypto.sign(null,Buffer.from('bridge-enroll:'+challenge.nonce),d.privateKey).toString('base64url');const result=await this.raw('/device/enroll',{nonce:challenge.nonce,publicKey:d.publicKey,signature,label:this.label},{enroll:true});if(result.deviceId!==d.deviceId)throw Error('Server device identity did not match');return result;})().finally(()=>{this.enrolling=null;});return this.enrolling;}
  async status(){try{await this.enroll();}catch(e){if(e.code!=='bridge_membership_deleted')throw e;await this.raw('/account/join',{}, {enroll:true});await this.enroll();}this.state={...await this.raw('/me'),deviceId:(await this.keys()).deviceId};return this.state;}
- async call(route,data={}){await this.keys();const result=await this.raw(route,data,{method:route==='/admin/users'?'GET':'POST'});if(route==='/catalog'&&Array.isArray(result.plugins)){const plugins=result.plugins.slice(0,100);for(let offset=0;offset<plugins.length;offset+=4)await Promise.all(plugins.slice(offset,offset+4).map(async p=>{if(!/^\/bridge-platform\/media\/[a-f0-9]{64}\.(png|jpg|webp)$/.test(p.image||''))return;try{const image=await this.raw('/media/read',{image:p.image});if(['image/png','image/jpeg','image/webp'].includes(image.mimeType)&&typeof image.base64==='string'&&image.base64.length<=7000000&&/^[A-Za-z0-9+/=]+$/.test(image.base64))p.imageDataUrl='data:'+image.mimeType+';base64,'+image.base64;}catch{}}));}return result;}
+ async call(route,data={}){if(this.readinessRequired)await this.readiness();await this.keys();const result=await this.raw(route,data,{method:route==='/admin/users'?'GET':'POST'});if(route==='/catalog'&&Array.isArray(result.plugins)){const plugins=result.plugins.slice(0,100);for(let offset=0;offset<plugins.length;offset+=4)await Promise.all(plugins.slice(offset,offset+4).map(async p=>{if(!/^\/bridge-platform\/media\/[a-f0-9]{64}\.(png|jpg|webp)$/.test(p.image||''))return;try{const image=await this.raw('/media/read',{image:p.image});if(['image/png','image/jpeg','image/webp'].includes(image.mimeType)&&typeof image.base64==='string'&&image.base64.length<=7000000&&/^[A-Za-z0-9+/=]+$/.test(image.base64))p.imageDataUrl='data:'+image.mimeType+';base64,'+image.base64;}catch{}}));}return result;}
  async catalog(){return this.raw('/catalog');}
  async checkout(data){const orderId=data.orderId||(await this.call('/checkout/quote',data)).id;const result=await this.call('/checkout/create',{orderId});const u=new URL(result.url);if(u.protocol!=='https:'||u.hostname!=='checkout.stripe.com'||u.username||u.password)throw Error('Untrusted checkout address');return{...result,url:u.href};}
  async forgetDevice(){if(this.clearSecret)await this.clearSecret('bridge-platform-device');this.device=null;this.state=null;}
