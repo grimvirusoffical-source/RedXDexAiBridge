@@ -67,3 +67,21 @@ test('termination requested during construction never opens a listener afterward
  h.signals.emit('SIGTERM');constructing.resolve({server,listen:async()=>{listenCalled=true;}});
  const result=await pending;assert.equal(result.started,false);assert.equal(listenCalled,false);assert.deepEqual(await result.stopped,{code:0});assert.deepEqual(h.codes,[0]);assert.deepEqual(h.logs,[MESSAGES.stopped]);
 });
+
+test('SIGTERM bounds hung construction and a late service never calls listen or changes the failed result',async()=>{
+ const constructing=deferred(),forced=deferred(),h=harness(),server=http.createServer();let listenCalled=false;
+ const pending=runProductionService({...h.options,shutdownTimeoutMs:30,forceExit:code=>{h.forced.push(code);forced.resolve();},createService:()=>constructing.promise});
+ h.signals.emit('SIGTERM');await forced.promise;
+ assert.deepEqual(h.codes,[1]);assert.deepEqual(h.forced,[1]);assert.deepEqual(h.logs,[MESSAGES.timeout]);assert.equal(h.signals.listenerCount('SIGTERM'),0);
+ constructing.resolve({server,listen:async()=>{listenCalled=true;}});
+ const result=await pending;assert.equal(result.started,false);assert.equal(listenCalled,false);assert.equal(server.listening,false);assert.deepEqual(await result.stopped,{code:1});
+ assert.deepEqual(h.codes,[1]);assert.deepEqual(h.logs,[MESSAGES.timeout]);await close(server);
+});
+test('SIGTERM bounds hung listen, closes its admission socket and ignores a late successful completion',async()=>{
+ const listening=deferred(),finishListen=deferred(),forced=deferred(),h=harness(),server=http.createServer(),port=await availablePort();
+ const pending=runProductionService({...h.options,shutdownTimeoutMs:30,forceExit:code=>{h.forced.push(code);forced.resolve();},createService:async()=>({server,listen:async()=>{await listenLoopback(server,port);listening.resolve();await finishListen.promise;}})});
+ await listening.promise;assert.equal(server.listening,true);h.signals.emit('SIGTERM');assert.equal(server.listening,false);await forced.promise;
+ assert.deepEqual(h.codes,[1]);assert.deepEqual(h.forced,[1]);assert.deepEqual(h.logs,[MESSAGES.timeout]);
+ finishListen.resolve();const result=await pending;assert.equal(result.started,false);assert.equal(server.listening,false);assert.deepEqual(await result.stopped,{code:1});
+ assert.deepEqual(h.codes,[1]);assert.deepEqual(h.logs,[MESSAGES.timeout]);await close(server);
+});
