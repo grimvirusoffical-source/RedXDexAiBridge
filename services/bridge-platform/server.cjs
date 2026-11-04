@@ -3,6 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {createPlatform}=require('./index.cjs'),{RedXStore,bridgeDatabaseName}=require('./store.cjs'),{createHandler,createNativeAuthenticator}=require('./http.cjs'),{PluginMediaStore}=require('./media.cjs');
 const {createStripeBilling,stripeClientFromEnvironment}=require('./stripe.cjs');
 const {createReadinessProbe,reviewedLegal}=require('./readiness.cjs');
+const {listenLoopback,runProductionService}=require('./runtime.cjs');
 function privateFile(file){if(!path.isAbsolute(file||''))throw Error('An absolute protected configuration path is required');const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||(process.platform!=='win32'&&(st.mode&0o077)))throw Error('Server configuration must be a private regular file');return fs.readFileSync(file,'utf8');}
 async function createProductionService(env=process.env){
  const config=JSON.parse(privateFile(env.BRIDGE_CONFIG_FILE));bridgeDatabaseName(config.database);if(!['sandbox','live'].includes(config.paymentsMode))throw Error('Explicit Stripe mode required');const priceCatalog=config.paymentsMode==='sandbox'?require('./sandbox-catalog.json'):JSON.parse(privateFile(config.stripeCatalogFile));if(priceCatalog.mode!==config.paymentsMode)throw Error('Stripe catalog mode mismatch');
@@ -32,7 +33,7 @@ async function createProductionService(env=process.env){
   return billing.extraRoutes(input);
  }});
  const server=http.createServer(handler);server.headersTimeout=10000;server.requestTimeout=30000;server.maxHeadersCount=40;
- return{server,platform,billing,listen:()=>new Promise((ok,bad)=>{server.once('error',bad);server.listen(config.port||17783,'127.0.0.1',ok);})};
+ return{server,platform,billing,listen:()=>listenLoopback(server,config.port)};
 }
-if(require.main===module)createProductionService().then(async service=>{await service.listen();console.log('Bridge platform listening on loopback with verified account integration');}).catch(()=>{console.error('Bridge platform configuration or account authority is not ready; no service started');process.exitCode=1;});
+if(require.main===module)void runProductionService({createService:()=>createProductionService()});
 module.exports={createProductionService,privateFile};

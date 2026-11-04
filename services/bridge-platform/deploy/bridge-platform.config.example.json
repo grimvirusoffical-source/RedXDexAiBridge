@@ -1,0 +1,18 @@
+{
+  "port": 17783,
+  "database": "bridge_platform_v1",
+  "redxOrigin": "http://127.0.0.1:17791",
+  "redxCredentialFile": "/etc/red-xai/bridge-platform/redx-credential",
+  "authorityModule": "/etc/red-xai/bridge-platform/authority.cjs",
+  "ownerSubjects": [],
+  "paymentsMode": "sandbox",
+  "stripeCatalogFile": "/etc/red-xai/bridge-platform/stripe-catalog.json",
+  "stripeWebhookEndpointId": "",
+  "stripeWebhookSecretFile": "/etc/red-xai/bridge-platform/stripe-webhook-secret",
+  "licenseKeyFile": "/etc/red-xai/bridge-platform/license-ed25519.pem",
+  "ipHashKeyFile": "/etc/red-xai/bridge-platform/ip-hmac-key",
+  "mediaDirectory": "/var/lib/red-xai-bridge-platform/media",
+  "canonicalCookieTransport": false,
+  "legalApproved": false,
+  "legalApproval": null
+}

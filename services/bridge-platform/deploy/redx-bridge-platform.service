@@ -1,0 +1,38 @@
+[Unit]
+Description=Red-XAI Bridge platform (private loopback service)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=redx-bridge
+Group=redx-bridge
+WorkingDirectory=/opt/red-xai/bridge-platform/current/services/bridge-platform
+Environment=NODE_ENV=production
+Environment=BRIDGE_ENABLE_LIVE_PAYMENTS=no
+EnvironmentFile=/etc/red-xai/bridge-platform/runtime.env
+ExecStart=/usr/bin/node server.cjs
+Restart=on-failure
+RestartSec=30s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=40s
+UMask=0077
+StateDirectory=red-xai-bridge-platform
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/red-xai-bridge-platform
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
