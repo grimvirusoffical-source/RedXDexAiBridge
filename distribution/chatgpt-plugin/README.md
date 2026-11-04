@@ -12,7 +12,7 @@ This toolkit is source and a command-line setup helper, not a public marketplace
 
     node scripts/export-chatgpt-plugin.cjs --endpoint https://YOUR-VERIFIED-HOST/mcp --output ./my-private-bridge
 
-The helper verifies the path-specific OAuth protected-resource document, its exact resource URL and HTTPS authorization server before creating any files. An offline or mismatched endpoint produces no output package. The output directory must be new; existing files are never overwritten.
+The helper reads at most 64 KiB of the path-specific OAuth protected-resource JSON within a ten-second fetch/body deadline, checks its exact resource URL, and validates advertised authorization-server URLs as plain HTTPS before creating any files. Oversized, stalled, malformed, offline or mismatched metadata produces no output package. The helper does not authenticate or fetch authorization-server metadata; a normal client OAuth flow and owner-approved pairing are still unproven until completed. The output directory must be new; existing files are never overwritten.
 
 For a **new** private plugin, use the generated package with your client's supported local/private plugin installation workflow. When an archive is required, ZIP the generated directory's contents, including the dot files and .codex-plugin directory. Keep that archive private. Complete your client's normal OAuth flow and approve pairing on your Bridge computer. Verify actual bridge_status and get_profile results before computer work.
 

@@ -8,7 +8,7 @@ function discovery(resource=endpoint,issuers=['https://paired-device.example']){
   assert.equal(options.redirect,'error');
   assert.ok(options.signal instanceof AbortSignal);
   assert.equal(options.headers.Authorization,undefined);
-  return {ok:true,status:200,text:async()=>JSON.stringify({resource,authorization_servers:issuers})};
+  const response=new Response(JSON.stringify({resource,authorization_servers:issuers}));response.text=()=>{throw Error('unbounded reader must not run');};return response;
  };
 }
 function fixture(t){
@@ -49,7 +49,7 @@ test('verified export has synchronized manifests, skill and real icon without ap
  assert.equal(png.readUInt32BE(16),256);assert.equal(png.readUInt32BE(20),256);
  const skill=fs.readFileSync(path.join(destination,'skills','red-xai-task-router','SKILL.md'),'utf8');
  assert.match(skill,/paired|owner-approved/);
- assert.doesNotMatch(skill,/SHADOW-|trycloudflare\.com|Authorization: Bearer/);
+ assert.doesNotMatch(skill,/(?:DESKTOP|LAPTOP)-[A-Z0-9]{6,}|trycloudflare\.com|Authorization: Bearer/);
 });
 test('config-only export leaves existing plugin identity and source untouched',async t=>{
  const {root,destination}=fixture(t),original=path.join(root,'existing-plugin');fs.mkdirSync(original);
@@ -67,7 +67,7 @@ test('mismatched resources and missing or unsafe OAuth issuers create no output'
  for(const fetchImpl of [
   discovery('https://different-device.example/mcp'),discovery(endpoint,[]),
   discovery(endpoint,['http://paired-device.example']),discovery(endpoint,['https://user:secret@paired-device.example']),
-  async()=>({ok:false,status:503}),async()=>({ok:true,status:200,text:async()=>'{not-json'}),async()=>{throw Error('offline');}
+  async()=>new Response('',{status:503}),async()=>new Response('{not-json'),async()=>{throw Error('offline');}
  ]){
   await assert.rejects(setup.exportPlugin({endpoint,output:destination,fetchImpl}),/OAuth/);
   assert.equal(fs.existsSync(destination),false);
@@ -86,5 +86,50 @@ test('CLI validates arguments and help does not open a connection',()=>{
  assert.throws(()=>setup.options(['--endpoint',endpoint,'--output','new','--config-only']),/server-name/);
  assert.throws(()=>setup.configuration(endpoint,'wrong name'),/server name/);
  const p=cp.spawnSync(process.execPath,[path.resolve(__dirname,'../scripts/export-chatgpt-plugin.cjs'),'--help'],{encoding:'utf8',timeout:5000,windowsHide:true});
- assert.equal(p.status,0);assert.match(p.stdout,/OAuth/);assert.doesNotMatch(p.stdout,/SHADOW-|trycloudflare\.com/);
+ assert.equal(p.status,0);assert.match(p.stdout,/OAuth/);assert.doesNotMatch(p.stdout,/(?:DESKTOP|LAPTOP)-[A-Z0-9]{6,}|trycloudflare\.com/);
+});
+
+test('oversized streamed metadata is cancelled before export',async t=>{
+ const {destination}=fixture(t);let cancelled=0;
+ const body=new ReadableStream({start(controller){controller.enqueue(new Uint8Array(32768));controller.enqueue(new Uint8Array(32768));controller.enqueue(new Uint8Array(1));},cancel(){cancelled++;}});
+ const response=new Response(body);
+ response.text=()=>{throw Error('unbounded response reader must not run');};
+ await assert.rejects(setup.exportPlugin({endpoint,output:destination,fetchImpl:async()=>response}),/too large/);
+ assert.equal(cancelled,1);assert.equal(response.body.locked,false);assert.equal(fs.existsSync(destination),false);
+});
+test('oversized content-length cancels an unread body',async t=>{
+ const {destination}=fixture(t);let cancelled=0;
+ const body=new ReadableStream({pull(){return new Promise(()=>{});},cancel(){cancelled++;}});
+ const response=new Response(body,{headers:{'content-length':'65537'}});
+ await assert.rejects(setup.exportPlugin({endpoint,output:destination,fetchImpl:async()=>response}),/too large/);
+ assert.equal(cancelled,1);assert.equal(fs.existsSync(destination),false);
+});
+test('a stalled metadata body reaches the shared deadline and releases its reader',async t=>{
+ const {destination}=fixture(t);let cancelled=0,signal;
+ const response=new Response(new ReadableStream({pull(){return new Promise(()=>{});},cancel(){cancelled++;}}));
+ await assert.rejects(setup.exportPlugin({endpoint,output:destination,discoveryTimeoutMs:20,fetchImpl:async(url,options)=>{signal=options.signal;return response;}}),/timed out/);
+ assert.equal(signal.aborted,true);assert.equal(cancelled,1);assert.equal(response.body.locked,false);assert.equal(fs.existsSync(destination),false);
+});
+test('a stalled fetch is bounded and late response bytes cannot create output',async t=>{
+ const {destination}=fixture(t);let finishFetch,signal,cancelled=0;
+ const response=new Response(new ReadableStream({cancel(){cancelled++;}}));
+ await assert.rejects(setup.exportPlugin({endpoint,output:destination,discoveryTimeoutMs:20,fetchImpl:(url,options)=>{signal=options.signal;return new Promise(resolve=>{finishFetch=resolve;});}}),/timed out/);
+ assert.equal(signal.aborted,true);finishFetch(response);await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(cancelled,1);assert.equal(fs.existsSync(destination),false);
+});
+test('JSON primitives and arrays fail with fixed object errors and no output',async t=>{
+ const {destination}=fixture(t);
+ for(const text of ['null','[]','false','1','"not an object"']){
+  await assert.rejects(setup.exportPlugin({endpoint,output:destination,fetchImpl:async()=>new Response(text)}),/must return a JSON object/);
+  assert.equal(fs.existsSync(destination),false);
+ }
+});
+test('exactly64KiB valid metadata is accepted and transport errors stay private',async t=>{
+ const {destination}=fixture(t);
+ const metadata={resource:endpoint,authorization_servers:['https://paired-device.example'],padding:''};
+ metadata.padding='x'.repeat(65536-Buffer.byteLength(JSON.stringify(metadata)));
+ const text=JSON.stringify(metadata);assert.equal(Buffer.byteLength(text),65536);
+ const result=await setup.exportPlugin({endpoint,output:destination,fetchImpl:async()=>new Response(text)});
+ assert.equal(result.files,6);
+ await assert.rejects(setup.verifyDiscovery(endpoint,async()=>{throw Error('PRIVATE_DIAGNOSTIC_MUST_NOT_APPEAR');}),error=>error.message==='OAuth discovery could not be verified; check Bridge is online');
 });

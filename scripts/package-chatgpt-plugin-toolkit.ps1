@@ -25,7 +25,7 @@ foreach($name in $entries.Keys) {
  if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unexpected source entry' }
  if ([IO.Path]::GetExtension($source) -ne '.png') {
   $text=Get-Content -LiteralPath $source -Raw
-  if ($text -match 'SHADOW-CRI|trycloudflare\.com|friendly-lesson-promoting') { throw 'Personal endpoint or device data found in public toolkit' }
+  if ($text -match 'https://[a-z0-9-]+\.trycloudflare\.com|\b[A-Z]{3,16}-[A-Z0-9]*[0-9][A-Z0-9]{3,16}\b') { throw 'Personal endpoint or device data found in public toolkit' }
  }
  $hashes+=[ordered]@{path=$name;sha256=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()}
 }
