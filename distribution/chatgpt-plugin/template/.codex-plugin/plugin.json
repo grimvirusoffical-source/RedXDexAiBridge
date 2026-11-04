@@ -1,0 +1,29 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "red-xai-bridge",
+  "version": "0.1.9",
+  "description": "Use your own Red-XAI Bridge for permission-controlled computer, terminal, file and crawler tasks.",
+  "author": {
+    "name": "Red-XAI"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Red-XAI Bridge",
+        "shortDescription": "Your permissioned AI bridge",
+        "longDescription": "Connect to your own Red-XAI Bridge installation and use the computer, file, terminal and crawler tools you explicitly permit. Each computer has its own owner-approved connection and OAuth pairing.",
+        "developerName": "Red-XAI",
+        "category": "Developer Tools",
+        "defaultPrompt": [
+          "Check my Bridge connection and this computer's permissions.",
+          "Use my Bridge terminal to check this project's setup.",
+          "Crawl this public website using my Bridge crawler."
+        ],
+        "logo": "./assets/bridge-icon.png",
+        "composerIcon": "./assets/bridge-icon.png",
+        "brandColor": "#D71920",
+        "brandColorDark": "#D71920"
+      }
+    }
+  }
+}

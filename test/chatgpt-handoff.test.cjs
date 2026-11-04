@@ -24,6 +24,8 @@ test('copied message preserves existing plugin and OAuth without embedding secre
  assert.match(msg,/existing private Red-XAI Bridge plugin/);
  assert.match(msg,/Keep its plugin identity, OAuth authentication, permissions/);
  assert.match(msg,/Do not create a duplicate plugin/);
+ assert.match(msg,/Do not add server-level OpenAI extensions/);
+ assert.match(msg,/normal client OAuth discovery and approval/);
  assert.doesNotMatch(msg,/Bearer\s|client_secret|Authorization:\s|token=[^ ]+/);
  assert.equal(msg.includes('https://owner-bridge.trycloudflare.com/mcp'),true);
 });
