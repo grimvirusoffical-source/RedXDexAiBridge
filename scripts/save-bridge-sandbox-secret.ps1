@@ -4,7 +4,7 @@ param(
  [string]$Account='acct_1USFfGEKYCPRlM5G'
 )
 $ErrorActionPreference='Stop'
-if($env:OS -ne 'Windows_NT'){throw 'This private prompt requires Windows DPAPI.'}
+if([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT){throw 'This private prompt requires Windows DPAPI.'}
 Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 if($Account -notmatch '^acct_[A-Za-z0-9]+$'){throw 'A Sandbox account ID is required.'}
 $target=[IO.Path]::GetFullPath($Path)
